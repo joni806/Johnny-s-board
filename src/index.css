@@ -1,0 +1,45 @@
+@import 'katex/dist/katex.min.css';
+@import url('https://fonts.googleapis.com/css2?family=Caveat:wght@600&family=Assistant:wght@300;400;600&display=swap');
+
+:root { --board-bg: #1e3d32; --chalk: #f5f5f5; --accent: #4ade80; --glass: rgba(255, 255, 255, 0.1); }
+body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; background-color: #11221c; font-family: 'Assistant', sans-serif; direction: rtl; }
+* { box-sizing: border-box; }
+
+/* סמנים לעכבר/עט */
+.cursor-draw { cursor: crosshair; } .cursor-text { cursor: text; } 
+.cursor-pan { cursor: grab; } .cursor-pan:active { cursor: grabbing; } 
+.cursor-select { cursor: default; } .cursor-move { cursor: move; } .cursor-erase { cursor: cell; }
+
+/* תיבות המתמטיקה */
+.math-box { position: absolute; text-shadow: 1px 1px 3px rgba(0,0,0,0.3); pointer-events: auto; padding: 5px 15px; border-radius: 8px; direction: ltr; cursor: text; transform: translate(0, -50%); border-bottom: 2px solid transparent; transition: 0.2s border; min-height: 50px; min-width: 20px; }
+.math-box.active-box { border-bottom: 2px solid rgba(74, 222, 128, 0.5); background: rgba(255, 255, 255, 0.02); }
+@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+.blinking-cursor { animation: blink 1.2s step-end infinite; font-weight: bold; }
+
+/* כפתורי שליטה עליונים */
+.controls { position: absolute; top: 20px; left: 20px; display: flex; gap: 10px; pointer-events: auto; z-index: 100; }
+.tool-btn { background: var(--glass); border: 1px solid rgba(255,255,255,0.2); color: white; padding: 10px 15px; border-radius: 10px; cursor: pointer; font-family: 'Assistant', sans-serif; font-weight: 600; transition: 0.2s; backdrop-filter: blur(5px); }
+.mode-active { background: var(--accent); color: #1e3d32; border: none; }
+
+/* ---> הנה הפלטה החסרה <--- */
+.side-palette { 
+  position: absolute; top: 75px; left: 20px; display: flex; gap: 8px; pointer-events: auto; 
+  background: var(--glass); padding: 8px; border-radius: 20px; backdrop-filter: blur(5px); 
+  border: 1px solid rgba(255,255,255,0.2); z-index: 100; align-items: center; 
+}
+
+.color-btn { width: 30px; height: 30px; border-radius: 50%; border: 2px solid rgba(0,0,0,0.3); cursor: pointer; transition: 0.2s; box-shadow: 0 2px 5px rgba(0,0,0,0.3); }
+.color-btn.active { border: 2px solid white; transform: scale(1.2); box-shadow: 0 0 10px rgba(255,255,255,0.5); }
+
+#history-controls { position: absolute; top: 20px; right: 20px; display: flex; gap: 10px; pointer-events: auto; z-index: 100; }
+.history-btn { background: var(--glass); border: 1px solid rgba(255,255,255,0.2); color: white; border-radius: 50%; width: 45px; height: 45px; font-size: 1.4rem; cursor: pointer; backdrop-filter: blur(5px); display: flex; align-items: center; justify-content: center; transition: 0.2s; }
+.history-btn:hover { background: rgba(255, 255, 255, 0.25); transform: scale(1.05); }
+
+/* המקלדת התחתונה ושורת העריכה */
+#toolbar { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--glass); backdrop-filter: blur(15px); -webkit-backdrop-filter: blur(15px); border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 24px; padding: 10px 20px; display: flex; gap: 8px; box-shadow: 0 8px 32px rgba(0,0,0,0.3); flex-wrap: wrap; justify-content: center; max-width: 95vw; direction: ltr; pointer-events: auto; z-index: 100; }
+.key { width: 50px; height: 50px; border-radius: 14px; border: none; background: rgba(255, 255, 255, 0.1); color: white; font-size: 1.4rem; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: 0.2s all; }
+.key:hover { background: rgba(255, 255, 255, 0.25); transform: translateY(-3px); }
+.key.special { background: var(--accent); color: #1e3d32; font-size: 1.5rem; font-weight: bold; }
+.key .katex { color: white; pointer-events: none; }
+#raw-input { position: absolute; bottom: calc(100% + 15px); left: 50%; transform: translateX(-50%); background: rgba(17, 34, 28, 0.95); padding: 10px 20px; border-radius: 12px; font-family: monospace; font-size: 1.5rem; border: 2px solid var(--accent); outline: none; opacity: 0; transition: 0.2s opacity; pointer-events: auto; min-width: 250px; max-width: 90vw; text-align: left; direction: ltr; box-shadow: 0 10px 30px rgba(0,0,0,0.6); resize: none; overflow: hidden; white-space: pre-wrap; word-wrap: break-word; line-height: 1.5; display: none; z-index: 101;}
+#raw-input.show { opacity: 1; display: block; }
