@@ -36,13 +36,14 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
         historyStack: [], redoStack: [], isLocked: false, isPanning: false, lastX: 0, lastY: 0,
         liveObj: null, liveObjType: null, liveObjProps: null, editCircles: [], editingOriginalObj: null,
         wasAutoSelected: false, isEnteringNodeEdit: false, clipboard: null,
-        activePointers: new Map() // מעקב אצבעות גלובלי
+        activePointers: new Map() 
     }).current;
 
-    const syncCustomLayers = () => {
+   const syncCustomLayers = () => {
         if (!fCanvas.current) return;
         const vpt = fCanvas.current.viewportTransform; 
         const transform = `matrix(${vpt[0]}, ${vpt[1]}, ${vpt[2]}, ${vpt[3]}, ${vpt[4]}, ${vpt[5]})`;
+        
         if (drawingCanvasRef.current) {
             drawingCanvasRef.current.style.transform = transform;
             drawingCanvasRef.current.style.transformOrigin = '0 0';
@@ -51,6 +52,9 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
             mathLayerRef.current.style.transform = transform;
             mathLayerRef.current.style.transformOrigin = '0 0';
         }
+        
+        // ---> התיקון: מכריחים את פבריק לצייר את המסך מחדש מיד אחרי הזזת המצלמה <---
+        fCanvas.current.requestRenderAll(); 
     };
 
     useEffect(() => {
@@ -108,19 +112,18 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
         const closeMenu = (e) => { if (!e.target.closest('.context-menu')) setContextMenu(prev => ({...prev, visible: false})); };
         window.addEventListener('pointerdown', closeMenu);
 
-        // מאזין גלגלת/Trackpad גלובלי ברמת ה-DOM למניעת התנגשויות דפדפן
         const viewport = viewportRef.current;
         const handleNativeWheel = (e) => {
-            e.preventDefault();
+            e.preventDefault(); 
             if (!fCanvas.current) return;
-            if (e.ctrlKey || e.metaKey) { // זום באמצעות מחוות צביטה במשטח מגע
+            if (e.ctrlKey || e.metaKey) { 
                 let zoom = fCanvas.current.getZoom();
                 zoom *= 0.999 ** e.deltaY;
                 zoom = Math.max(0.1, Math.min(20, zoom));
                 const rect = viewport.getBoundingClientRect();
                 fCanvas.current.zoomToPoint({ x: e.clientX - rect.left, y: e.clientY - rect.top }, zoom);
                 syncCustomLayers();
-            } else { // גרירה (Pan) באמצעות 2 אצבעות על משטח מגע
+            } else { 
                 const delta = new fabric.Point(-e.deltaX, -e.deltaY);
                 fCanvas.current.relativePan(delta);
                 syncCustomLayers();
@@ -128,25 +131,39 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
         };
         if (viewport) viewport.addEventListener('wheel', handleNativeWheel, { passive: false });
 
+        // ---- ההגנה האגרסיבית נגד השתלטות של iPadOS על אירועי מגע ו-Scribble ----
+        const dCanvas = drawingCanvasRef.current;
+        const preventAppleGestures = (e) => {
+            // חוסם רק כשבאמת מנסים לצייר/למחוק עם אצבע/עט בודד
+            if ((modeRef.current === 'draw' || modeRef.current === 'erase') && e.touches && e.touches.length === 1) {
+                e.preventDefault();
+            }
+        };
+
+        if (dCanvas) {
+            dCanvas.addEventListener('touchstart', preventAppleGestures, { passive: false });
+            dCanvas.addEventListener('touchmove', preventAppleGestures, { passive: false });
+        }
+
         return () => {
             window.removeEventListener('keydown', handleKeyDown);
             window.removeEventListener('pointerdown', closeMenu);
             if (viewport) viewport.removeEventListener('wheel', handleNativeWheel);
+            if (dCanvas) {
+                dCanvas.removeEventListener('touchstart', preventAppleGestures);
+                dCanvas.removeEventListener('touchmove', preventAppleGestures);
+            }
             if (fCanvas.current) fCanvas.current.dispose();
         };
     }, [setMode]);
 
-    // ---- מנוע גרירה ומחוות גלובלי (תופס אירועים לפני הקנבסים) ----
     const handleViewportPointerDown = (e) => {
         s.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-        
-        // ברגע שמזהים 2 אצבעות או שיפט, עוברים למצב גרירה גלובלי
         if (s.activePointers.size === 2 || e.shiftKey) {
             s.isPanning = true;
-            s.drawing = false; // ביטול ציור אם התחיל בטעות
+            s.drawing = false; 
             if (drawingCanvasRef.current) drawingCanvasRef.current.getContext('2d').clearRect(0, 0, BOARD_SIZE, BOARD_SIZE);
             if (fCanvas.current) { fCanvas.current.discardActiveObject(); fCanvas.current.selection = false; }
-            
             const pts = Array.from(s.activePointers.values());
             s.lastX = s.activePointers.size === 2 ? (pts[0].x + pts[1].x) / 2 : e.clientX;
             s.lastY = s.activePointers.size === 2 ? (pts[0].y + pts[1].y) / 2 : e.clientY;
@@ -155,16 +172,13 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
 
     const handleViewportPointerMove = (e) => {
         if (s.activePointers.has(e.pointerId)) s.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-
         if (s.isPanning && fCanvas.current) {
-            e.stopPropagation(); // מונע מהאירוע להגיע לקנבסים ולצייר בטעות
+            e.stopPropagation(); 
             let currentX = e.clientX; let currentY = e.clientY;
-
             if (s.activePointers.size === 2) {
                 const pts = Array.from(s.activePointers.values());
                 currentX = (pts[0].x + pts[1].x) / 2; currentY = (pts[0].y + pts[1].y) / 2;
             }
-
             const delta = new fabric.Point(currentX - s.lastX, currentY - s.lastY);
             fCanvas.current.relativePan(delta);
             syncCustomLayers();
@@ -176,7 +190,8 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
         s.activePointers.delete(e.pointerId);
         if (s.isPanning && s.activePointers.size < 2 && !e.shiftKey) {
             s.isPanning = false;
-            if (fCanvas.current) fCanvas.current.selection = true; // החזרת אפשרות בחירה של צורות
+            s.activePointers.clear(); 
+            if (fCanvas.current) fCanvas.current.selection = true; 
         }
     };
 
@@ -191,7 +206,6 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
 
     const handleNativeContextMenu = (e) => { e.preventDefault(); triggerContextMenu(e.clientX, e.clientY); };
 
-    // --- בניית צורות ---
     const buildLine = (p1, p2, color) => { let l = new fabric.Line([p1.x, p1.y, p2.x, p2.y], { stroke: color, strokeWidth: 3, strokeLineCap: 'round', selectable: true, hasControls: true }); l.customType = 'line'; return l; };
     const buildArrow = (start, end, color) => { let angle = Math.atan2(end.y - start.y, end.x - start.x); let headlen = 20; const pathData = `M ${start.x} ${start.y} L ${end.x} ${end.y} L ${end.x - headlen * Math.cos(angle - Math.PI / 6)} ${end.y - headlen * Math.sin(angle - Math.PI / 6)} M ${end.x} ${end.y} L ${end.x - headlen * Math.cos(angle + Math.PI / 6)} ${end.y - headlen * Math.sin(angle + Math.PI / 6)}`; let p = new fabric.Path(pathData, { fill: 'transparent', stroke: color, strokeWidth: 3, strokeLineCap: 'round', strokeLineJoin: 'round', selectable: true }); p.customType = 'arrow'; return p; };
     const buildCurve = (start, cp, end, color) => { const pathData = `M ${start.x} ${start.y} Q ${cp.x} ${cp.y} ${end.x} ${end.y}`; let p = new fabric.Path(pathData, { fill: 'transparent', stroke: color, strokeWidth: 3, strokeLineCap: 'round', selectable: true }); p.customType = 'curve'; return p; };
@@ -365,9 +379,14 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
     };
 
     const handlePointerDown = (e) => {
-        if (s.isPanning) return; // השהיה - המעטפת הכללית מטפלת כרגע בגרירה
+        if (s.isPanning) return; 
         if (s.activeBox || (window.mathVirtualKeyboard && window.mathVirtualKeyboard.visible)) { deactivateBox(); return; }
         if (!e.target.closest('.context-menu') && s.editCircles.length > 0) exitNodeEditMode();
+
+        // נעילת המצביע לקנבס - הכרחי למכשירי מגע ועט
+        if (e.target && e.target.setPointerCapture) {
+            try { e.target.setPointerCapture(e.pointerId); } catch(err){}
+        }
 
         const rect = drawingCanvasRef.current.getBoundingClientRect(); const zoom = fCanvas.current.getZoom(); 
         const x = (e.nativeEvent.clientX - rect.left) / zoom; const y = (e.nativeEvent.clientY - rect.top) / zoom; const coords = { x, y };
@@ -383,12 +402,17 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
         } else if (modeRef.current === 'draw' || modeRef.current === 'erase') {
             s.drawing = true; s.hasSnapped = false; s.points = [coords]; s.liveObj = null;
             const ctx = drawingCanvasRef.current.getContext('2d'); ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.clearRect(0, 0, BOARD_SIZE, BOARD_SIZE); ctx.beginPath(); ctx.moveTo(coords.x, coords.y);
+            
+            // תוספת קריטית לנקודה מיידית בטפיחת עט
+            ctx.lineTo(coords.x, coords.y + 0.01);
+            
             if (modeRef.current === 'erase') { ctx.lineWidth = 40 / zoom; ctx.strokeStyle = 'rgba(255,0,0,0.3)'; } else { ctx.lineWidth = 3 / zoom; ctx.strokeStyle = drawColorRef.current; }
+            ctx.stroke();
         }
     };
 
     const handlePointerMove = (e) => {
-        if (s.isPanning || !s.drawing) return; // המעטפת הכללית שולטת עכשיו
+        if (s.isPanning || !s.drawing) return; 
         const rect = drawingCanvasRef.current.getBoundingClientRect(); const zoom = fCanvas.current.getZoom(); 
         const coords = { x: (e.nativeEvent.clientX - rect.left) / zoom, y: (e.nativeEvent.clientY - rect.top) / zoom };
         
@@ -435,8 +459,13 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
         clearTimeout(s.snapTimeout); s.snapTimeout = setTimeout(recognizeAndConvertToFabric, 400); 
     };
 
-    const handlePointerUp = () => {
-        if (s.isPanning) return; // מטופל גלובלית
+    const handlePointerUp = (e) => {
+        // שחרור נעילת המצביע
+        if (e && e.target && e.target.releasePointerCapture) {
+            try { e.target.releasePointerCapture(e.pointerId); } catch(err){}
+        }
+
+        if (s.isPanning) return; 
         if (s.liveObj) { fCanvas.current.setActiveObject(s.liveObj); setMode('select'); s.wasAutoSelected = true; saveState(); s.liveObj = null;
         } else if (s.drawing && !s.hasSnapped && modeRef.current === 'draw') convertToScribble();
         if (modeRef.current === 'erase') saveState();
@@ -491,7 +520,11 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
             onPointerMoveCapture={handleViewportPointerMove}
             onPointerUpCapture={handleViewportPointerUp}
             onPointerCancelCapture={handleViewportPointerUp}
-            style={{ width: '100vw', height: '100vh', overflow: 'hidden', position: 'relative', cursor: s.isPanning ? 'grabbing' : 'default' }}>
+            style={{ 
+                width: '100vw', height: '100vh', overflow: 'hidden', 
+                position: 'relative', cursor: s.isPanning ? 'grabbing' : 'default',
+                touchAction: 'none' 
+            }}>
             <style>{`
                 .math-wrapper { position: absolute; direction: ltr !important; unicode-bidi: isolate !important; display: flex; align-items: center; width: max-content; pointer-events: auto; border-radius: 8px; transition: 0.2s border, 0.2s background; border-bottom: 2px solid transparent; }
                 .math-wrapper.active-wrapper { border-bottom: 2px solid rgba(74, 222, 128, 0.5); background: rgba(255, 255, 255, 0.05) !important; }
@@ -541,7 +574,13 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
                 </div>
                 <canvas id="drawing-canvas" ref={drawingCanvasRef}
                     className={`cursor-${mode}`} width={BOARD_SIZE} height={BOARD_SIZE}
-                    style={{ position: 'absolute', top: 0, left: 0, zIndex: 2, touchAction: 'none', pointerEvents: (mode === 'draw' || mode === 'erase' || mode === 'text') ? 'auto' : 'none' }}
+                    style={{ 
+                        position: 'absolute', top: 0, left: 0, zIndex: 2, 
+                        touchAction: 'none', 
+                        WebkitTouchCallout: 'none', // מבטל תפריטי רפאים באייפד
+                        WebkitUserSelect: 'none', // חוסם בחירת טקסט בטעות
+                        pointerEvents: (mode === 'draw' || mode === 'erase' || mode === 'text') ? 'auto' : 'none' 
+                    }}
                     onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp}
                 />
                 <div id="math-layer" ref={mathLayerRef} style={{ position: 'absolute', top: 0, left: 0, width: BOARD_SIZE + 'px', height: BOARD_SIZE + 'px', pointerEvents: 'none', zIndex: 3 }}></div>
