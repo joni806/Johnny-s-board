@@ -43,3 +43,7 @@ body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; background-c
 .key .katex { color: white; pointer-events: none; }
 #raw-input { position: absolute; bottom: calc(100% + 15px); left: 50%; transform: translateX(-50%); background: rgba(17, 34, 28, 0.95); padding: 10px 20px; border-radius: 12px; font-family: monospace; font-size: 1.5rem; border: 2px solid var(--accent); outline: none; opacity: 0; transition: 0.2s opacity; pointer-events: auto; min-width: 250px; max-width: 90vw; text-align: left; direction: ltr; box-shadow: 0 10px 30px rgba(0,0,0,0.6); resize: none; overflow: hidden; white-space: pre-wrap; word-wrap: break-word; line-height: 1.5; display: none; z-index: 101;}
 #raw-input.show { opacity: 1; display: block; }
+/* ביטול השתלטות הדפדפן על מגע כדי לאפשר ציור חלק בטאבלטים */
+.canvas-container {
+  touch-action: none !important;
+}
