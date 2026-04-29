@@ -8,7 +8,6 @@ import 'nerdamer/Calculus';
 import 'nerdamer/Solve';
 
 const fabric = fabricPkg.fabric || fabricPkg;
-const BOARD_SIZE = 10000; 
 
 const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize }, ref) => {
     const fabricCanvasElRef = useRef(null);
@@ -44,51 +43,65 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
         const vpt = fCanvas.current.viewportTransform; 
         const transform = `matrix(${vpt[0]}, ${vpt[1]}, ${vpt[2]}, ${vpt[3]}, ${vpt[4]}, ${vpt[5]})`;
         
-        if (drawingCanvasRef.current) {
-            drawingCanvasRef.current.style.transform = transform;
-            drawingCanvasRef.current.style.transformOrigin = '0 0';
-        }
+        // שכבת המתמטיקה זזה בהתאם למצלמה של פבריק
         if (mathLayerRef.current) {
             mathLayerRef.current.style.transform = transform;
             mathLayerRef.current.style.transformOrigin = '0 0';
         }
         
-        // ---> התיקון: מכריחים את פבריק לצייר את המסך מחדש מיד אחרי הזזת המצלמה <---
         fCanvas.current.requestRenderAll(); 
     };
 
     useEffect(() => {
-        setTimeout(() => {
+        const initCanvas = () => {
             if (fCanvas.current) {
-                const zoom = fCanvas.current.getZoom();
-                const vpt = fCanvas.current.viewportTransform;
-                vpt[4] = -(BOARD_SIZE * zoom - window.innerWidth) / 2;
-                vpt[5] = -(BOARD_SIZE * zoom - window.innerHeight) / 2;
+                fCanvas.current.dispose();
+            }
+            // --- הוסף את זה ---
+    // הגדרת הרזולוציה הפנימית לקנבס הציור השקוף
+    if (drawingCanvasRef.current) {
+        drawingCanvasRef.current.width = window.innerWidth;
+        drawingCanvasRef.current.height = window.innerHeight;
+    }
+            fCanvas.current = new fabric.Canvas(fabricCanvasElRef.current, {
+                width: window.innerWidth, 
+                height: window.innerHeight, 
+                selection: true, isDrawingMode: false, 
+                enableRetinaScaling: true, // מומלץ להפעיל לאיכות טקסט וקווים
+                fireMiddleClick: true, allowTouchScrolling: false, 
+                stopContextMenu: true, renderOnAddRemove: false 
+            });
+
+            fCanvas.current.on('mouse:dblclick', (opt) => {
+                const target = opt.target || fCanvas.current.findTarget(opt.e);
+                if (target && target.customType) enterNodeEditMode(target);
+            });
+
+            fCanvas.current.on('selection:cleared', () => {
+                if (s.isEnteringNodeEdit) return; 
+                exitNodeEditMode();
+                if (modeRef.current === 'select' && s.wasAutoSelected && s.editCircles.length === 0) {
+                    setMode('draw'); s.wasAutoSelected = false;
+                }
+            });
+
+            setTimeout(saveState, 200);
+        };
+
+        initCanvas();
+
+        const handleResize = () => {
+            if (fCanvas.current) {
+                fCanvas.current.setWidth(window.innerWidth);
+                fCanvas.current.setHeight(window.innerHeight);
                 fCanvas.current.requestRenderAll();
-                syncCustomLayers();
             }
-        }, 100);
-
-        fCanvas.current = new fabric.Canvas(fabricCanvasElRef.current, {
-            width: BOARD_SIZE, height: BOARD_SIZE, selection: true, isDrawingMode: false, 
-            enableRetinaScaling: false, fireMiddleClick: true, allowTouchScrolling: false, 
-            stopContextMenu: true, renderOnAddRemove: false 
-        });
-
-        fCanvas.current.on('mouse:dblclick', (opt) => {
-            const target = opt.target || fCanvas.current.findTarget(opt.e);
-            if (target && target.customType) enterNodeEditMode(target);
-        });
-
-        fCanvas.current.on('selection:cleared', () => {
-            if (s.isEnteringNodeEdit) return; 
-            exitNodeEditMode();
-            if (modeRef.current === 'select' && s.wasAutoSelected && s.editCircles.length === 0) {
-                setMode('draw'); s.wasAutoSelected = false;
-            }
-        });
-
-        setTimeout(saveState, 200);
+            if (drawingCanvasRef.current) {
+        drawingCanvasRef.current.width = window.innerWidth;
+        drawingCanvasRef.current.height = window.innerHeight;
+    }
+        };
+        window.addEventListener('resize', handleResize);
 
         const handleKeyDown = async (e) => {
             if (s.activeBox) return; 
@@ -131,28 +144,12 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
         };
         if (viewport) viewport.addEventListener('wheel', handleNativeWheel, { passive: false });
 
-        // ---- ההגנה האגרסיבית נגד השתלטות של iPadOS על אירועי מגע ו-Scribble ----
-        const dCanvas = drawingCanvasRef.current;
-        const preventAppleGestures = (e) => {
-            // חוסם רק כשבאמת מנסים לצייר/למחוק עם אצבע/עט בודד
-            if ((modeRef.current === 'draw' || modeRef.current === 'erase') && e.touches && e.touches.length === 1) {
-                e.preventDefault();
-            }
-        };
-
-        if (dCanvas) {
-            dCanvas.addEventListener('touchstart', preventAppleGestures, { passive: false });
-            dCanvas.addEventListener('touchmove', preventAppleGestures, { passive: false });
-        }
 
         return () => {
+            window.removeEventListener('resize', handleResize);
             window.removeEventListener('keydown', handleKeyDown);
             window.removeEventListener('pointerdown', closeMenu);
             if (viewport) viewport.removeEventListener('wheel', handleNativeWheel);
-            if (dCanvas) {
-                dCanvas.removeEventListener('touchstart', preventAppleGestures);
-                dCanvas.removeEventListener('touchmove', preventAppleGestures);
-            }
             if (fCanvas.current) fCanvas.current.dispose();
         };
     }, [setMode]);
@@ -162,7 +159,7 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
         if (s.activePointers.size === 2 || e.shiftKey) {
             s.isPanning = true;
             s.drawing = false; 
-            if (drawingCanvasRef.current) drawingCanvasRef.current.getContext('2d').clearRect(0, 0, BOARD_SIZE, BOARD_SIZE);
+            if (drawingCanvasRef.current) drawingCanvasRef.current.getContext('2d').clearRect(0, 0, window.innerWidth, window.innerHeight);
             if (fCanvas.current) { fCanvas.current.discardActiveObject(); fCanvas.current.selection = false; }
             const pts = Array.from(s.activePointers.values());
             s.lastX = s.activePointers.size === 2 ? (pts[0].x + pts[1].x) / 2 : e.clientX;
@@ -306,7 +303,7 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
     };
 
     const getCenterPos = () => {
-        if (!fCanvas.current) return { x: BOARD_SIZE/2, y: BOARD_SIZE/2 };
+        if (!fCanvas.current) return { x: window.innerWidth/2, y: window.innerHeight/2 };
         const vpt = fCanvas.current.viewportTransform; const zoom = fCanvas.current.getZoom();
         return { x: (-vpt[4] + window.innerWidth / 2) / zoom, y: (-vpt[5] + window.innerHeight / 2) / zoom };
     };
@@ -383,13 +380,21 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
         if (s.activeBox || (window.mathVirtualKeyboard && window.mathVirtualKeyboard.visible)) { deactivateBox(); return; }
         if (!e.target.closest('.context-menu') && s.editCircles.length > 0) exitNodeEditMode();
 
-        // נעילת המצביע לקנבס - הכרחי למכשירי מגע ועט
         if (e.target && e.target.setPointerCapture) {
             try { e.target.setPointerCapture(e.pointerId); } catch(err){}
         }
 
-        const rect = drawingCanvasRef.current.getBoundingClientRect(); const zoom = fCanvas.current.getZoom(); 
-        const x = (e.nativeEvent.clientX - rect.left) / zoom; const y = (e.nativeEvent.clientY - rect.top) / zoom; const coords = { x, y };
+        const zoom = fCanvas.current.getZoom(); 
+        const vpt = fCanvas.current.viewportTransform;
+        
+        // קואורדינטות הציור על המסך
+        const screenX = e.nativeEvent.clientX;
+        const screenY = e.nativeEvent.clientY;
+        
+        // קואורדינטות וירטואליות עבור Fabric
+        const virtualX = (screenX - vpt[4]) / zoom; 
+        const virtualY = (screenY - vpt[5]) / zoom; 
+        const coords = { x: virtualX, y: virtualY };
 
         if (modeRef.current === 'select') { 
             const target = fCanvas.current.findTarget(e.nativeEvent);
@@ -397,24 +402,35 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
         }
         
         if (modeRef.current === 'text') { 
-            const wrapper = createMathFieldDOM(x + 'px', (y - 30) + 'px', '', globalFontSize + 'px', textColorRef.current);
+            const wrapper = createMathFieldDOM(virtualX + 'px', (virtualY - 30) + 'px', '', globalFontSize + 'px', textColorRef.current);
             mathLayerRef.current.appendChild(wrapper); wrapper.querySelector('math-field').focus();
         } else if (modeRef.current === 'draw' || modeRef.current === 'erase') {
             s.drawing = true; s.hasSnapped = false; s.points = [coords]; s.liveObj = null;
-            const ctx = drawingCanvasRef.current.getContext('2d'); ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.clearRect(0, 0, BOARD_SIZE, BOARD_SIZE); ctx.beginPath(); ctx.moveTo(coords.x, coords.y);
+            const ctx = drawingCanvasRef.current.getContext('2d'); 
+            ctx.lineCap = 'round'; ctx.lineJoin = 'round'; 
+            ctx.clearRect(0, 0, window.innerWidth, window.innerHeight); 
+            ctx.beginPath(); 
+            // מציירים בקואורדינטות של המסך
+            ctx.moveTo(screenX, screenY);
+            ctx.lineTo(screenX, screenY + 0.01);
             
-            // תוספת קריטית לנקודה מיידית בטפיחת עט
-            ctx.lineTo(coords.x, coords.y + 0.01);
-            
-            if (modeRef.current === 'erase') { ctx.lineWidth = 40 / zoom; ctx.strokeStyle = 'rgba(255,0,0,0.3)'; } else { ctx.lineWidth = 3 / zoom; ctx.strokeStyle = drawColorRef.current; }
+            if (modeRef.current === 'erase') { ctx.lineWidth = 40; ctx.strokeStyle = 'rgba(255,0,0,0.3)'; } 
+            else { ctx.lineWidth = 3; ctx.strokeStyle = drawColorRef.current; }
             ctx.stroke();
         }
     };
 
     const handlePointerMove = (e) => {
         if (s.isPanning || !s.drawing) return; 
-        const rect = drawingCanvasRef.current.getBoundingClientRect(); const zoom = fCanvas.current.getZoom(); 
-        const coords = { x: (e.nativeEvent.clientX - rect.left) / zoom, y: (e.nativeEvent.clientY - rect.top) / zoom };
+        const zoom = fCanvas.current.getZoom(); 
+        const vpt = fCanvas.current.viewportTransform;
+        
+        const screenX = e.nativeEvent.clientX;
+        const screenY = e.nativeEvent.clientY;
+        
+        const virtualX = (screenX - vpt[4]) / zoom; 
+        const virtualY = (screenY - vpt[5]) / zoom; 
+        const coords = { x: virtualX, y: virtualY };
         
         if (s.liveObj) {
             fCanvas.current.remove(s.liveObj);
@@ -441,7 +457,14 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
         }
 
         if (s.hasSnapped) return;
-        const ctx = drawingCanvasRef.current.getContext('2d'); s.points.push(coords); ctx.lineTo(coords.x, coords.y); ctx.stroke(); ctx.beginPath(); ctx.moveTo(coords.x, coords.y);
+        const ctx = drawingCanvasRef.current.getContext('2d'); 
+        s.points.push(coords); 
+        
+        // הציור נעשה בקואורדינטות מסך
+        ctx.lineTo(screenX, screenY); 
+        ctx.stroke(); 
+        ctx.beginPath(); 
+        ctx.moveTo(screenX, screenY);
         
         if (modeRef.current === 'erase') {
             const eraserRadius = 20 / zoom;
@@ -460,7 +483,6 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
     };
 
     const handlePointerUp = (e) => {
-        // שחרור נעילת המצביע
         if (e && e.target && e.target.releasePointerCapture) {
             try { e.target.releasePointerCapture(e.pointerId); } catch(err){}
         }
@@ -470,7 +492,7 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
         } else if (s.drawing && !s.hasSnapped && modeRef.current === 'draw') convertToScribble();
         if (modeRef.current === 'erase') saveState();
         s.drawing = false; s.points = []; clearTimeout(s.snapTimeout);
-        drawingCanvasRef.current.getContext('2d').clearRect(0, 0, BOARD_SIZE, BOARD_SIZE);
+        drawingCanvasRef.current.getContext('2d').clearRect(0, 0, window.innerWidth, window.innerHeight);
     };
 
     const convertToScribble = () => {
@@ -505,7 +527,7 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
         if (objToAdd) { 
             s.hasSnapped = true; const liveTypes = ['line', 'arrow', 'curve', 'ellipse', 'rect', 'triangle'];
             if (s.drawing && objType && liveTypes.includes(objType)) { s.liveObj = objToAdd; s.liveObjType = objType; s.liveObjProps = objProps; fCanvas.current.add(s.liveObj); } else { fCanvas.current.add(objToAdd); fCanvas.current.setActiveObject(objToAdd); setMode('select'); s.wasAutoSelected = true; saveState(); }
-            drawingCanvasRef.current.getContext('2d').clearRect(0, 0, BOARD_SIZE, BOARD_SIZE); fCanvas.current.requestRenderAll(); s.points = []; 
+            drawingCanvasRef.current.getContext('2d').clearRect(0, 0, window.innerWidth, window.innerHeight); fCanvas.current.requestRenderAll(); s.points = []; 
         }
     };
 
@@ -568,22 +590,26 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
                 </div>
             )}
 
-            <div id="board-container" style={{ position: 'relative', width: BOARD_SIZE + 'px', height: BOARD_SIZE + 'px', background: boardBg, transition: '0.5s background' }}>
-                <div style={{ position: 'absolute', top: 0, left: 0, zIndex: 1 }}>
+            {/* הקונטיינר עכשיו תופס את גודל המסך בדיוק */}
+            <div id="board-container" style={{ position: 'relative', width: '100%', height: '100%', background: boardBg, transition: '0.5s background' }}>
+                <div style={{ position: 'absolute', top: 0, left: 0, zIndex: 1, width: '100%', height: '100%' }}>
                     <canvas id="fabric-canvas" ref={fabricCanvasElRef} />
                 </div>
-                <canvas id="drawing-canvas" ref={drawingCanvasRef}
-                    className={`cursor-${mode}`} width={BOARD_SIZE} height={BOARD_SIZE}
+                {/* קנבס הציור יושב בצורה סטטית על המסך כדי לחסוך ביצועים */}
+             <canvas id="drawing-canvas" ref={drawingCanvasRef}
+                    className={`cursor-${mode}`} 
                     style={{ 
                         position: 'absolute', top: 0, left: 0, zIndex: 2, 
+                        width: '100%', height: '100%', // משאירים את ה-CSS כפי שהוא
                         touchAction: 'none', 
-                        WebkitTouchCallout: 'none', // מבטל תפריטי רפאים באייפד
-                        WebkitUserSelect: 'none', // חוסם בחירת טקסט בטעות
+                        WebkitTouchCallout: 'none',
+                        WebkitUserSelect: 'none',
                         pointerEvents: (mode === 'draw' || mode === 'erase' || mode === 'text') ? 'auto' : 'none' 
                     }}
                     onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp}
                 />
-                <div id="math-layer" ref={mathLayerRef} style={{ position: 'absolute', top: 0, left: 0, width: BOARD_SIZE + 'px', height: BOARD_SIZE + 'px', pointerEvents: 'none', zIndex: 3 }}></div>
+                {/* שכבת המתמטיקה מאופסת לגודל 0 כדי לא לתפוס מקום וירטואלי, האלמנטים בתוכה יקבלו מיקום מוחלט */}
+                <div id="math-layer" ref={mathLayerRef} style={{ position: 'absolute', top: 0, left: 0, width: '0px', height: '0px', overflow: 'visible', pointerEvents: 'none', zIndex: 3 }}></div>
             </div>
         </div>
     );
