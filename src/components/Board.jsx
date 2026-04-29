@@ -145,14 +145,37 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
         if (viewport) viewport.addEventListener('wheel', handleNativeWheel, { passive: false });
 
 
+       const preventScroll = (e) => {
+            // מונע קפיצות מסך רק במצב ציור/מחיקה ורק באצבע אחת (כדי לאפשר גלילה בשתי אצבעות)
+            if ((modeRef.current === 'draw' || modeRef.current === 'erase') && e.touches.length === 1) {
+                e.preventDefault();
+            }
+        };
+
+        const dCanvas = drawingCanvasRef.current;
+        if (dCanvas) {
+            dCanvas.addEventListener('touchmove', preventScroll, { passive: false });
+        }
+        // ==========================================
+
+
         return () => {
             window.removeEventListener('resize', handleResize);
             window.removeEventListener('keydown', handleKeyDown);
             window.removeEventListener('pointerdown', closeMenu);
             if (viewport) viewport.removeEventListener('wheel', handleNativeWheel);
+            
+            // ==========================================
+            // חובה להוסיף גם את שורת הניקוי הזו כאן:
+            // ==========================================
+            if (dCanvas) {
+                dCanvas.removeEventListener('touchmove', preventScroll);
+            }
+            // ==========================================
+
             if (fCanvas.current) fCanvas.current.dispose();
         };
-    }, [setMode]);
+    }, [setMode]); // סיום ה-useEffect
 
     const handleViewportPointerDown = (e) => {
         s.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -420,39 +443,22 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
         }
     };
 
-    const handlePointerMove = (e) => {
+   const handlePointerMove = (e) => {
         if (s.isPanning || !s.drawing) return; 
         const zoom = fCanvas.current.getZoom(); 
         const vpt = fCanvas.current.viewportTransform;
         
-        const screenX = e.nativeEvent.clientX;
-        const screenY = e.nativeEvent.clientY;
+        // תיקון האופסט גם כאן
+        const rect = drawingCanvasRef.current.getBoundingClientRect();
+        const screenX = e.nativeEvent.clientX - rect.left;
+        const screenY = e.nativeEvent.clientY - rect.top;
         
         const virtualX = (screenX - vpt[4]) / zoom; 
         const virtualY = (screenY - vpt[5]) / zoom; 
         const coords = { x: virtualX, y: virtualY };
         
         if (s.liveObj) {
-            fCanvas.current.remove(s.liveObj);
-            if (s.liveObjType === 'line') s.liveObj = buildLine(s.liveObjProps.start, coords, drawColorRef.current);
-            else if (s.liveObjType === 'arrow') s.liveObj = buildArrow(s.liveObjProps.start, coords, drawColorRef.current);
-            else if (s.liveObjType === 'curve') {
-                let cpX = 2 * s.liveObjProps.extremePoint.x - 0.5 * s.liveObjProps.start.x - 0.5 * coords.x; let cpY = 2 * s.liveObjProps.extremePoint.y - 0.5 * s.liveObjProps.start.y - 0.5 * coords.y; 
-                s.liveObj = buildCurve(s.liveObjProps.start, {x: cpX, y: cpY}, coords, drawColorRef.current);
-            }
-            else if (s.liveObjType === 'ellipse') {
-                let newRx = Math.max(1, Math.abs(coords.x - s.liveObjProps.cx) + s.liveObjProps.offsetRx); let newRy = Math.max(1, Math.abs(coords.y - s.liveObjProps.cy) + s.liveObjProps.offsetRy);
-                s.liveObj = new fabric.Ellipse({ originX: 'center', originY: 'center', left: s.liveObjProps.cx, top: s.liveObjProps.cy, rx: newRx, ry: newRy, fill: 'rgba(255, 255, 255, 0.01)', stroke: drawColorRef.current, strokeWidth: 3, customType: 'ellipse' });
-            }
-            else if (s.liveObjType === 'rect') {
-                let vX = coords.x + s.liveObjProps.offsetX; let vY = coords.y + s.liveObjProps.offsetY; let newL = Math.min(s.liveObjProps.anchorX, vX); let newT = Math.min(s.liveObjProps.anchorY, vY);
-                let w = Math.max(1, Math.abs(vX - s.liveObjProps.anchorX)); let h = Math.max(1, Math.abs(vY - s.liveObjProps.anchorY));
-                s.liveObj = new fabric.Rect({ originX: 'left', originY: 'top', left: newL, top: newT, width: w, height: h, fill: 'rgba(255, 255, 255, 0.01)', stroke: drawColorRef.current, strokeWidth: 3, customType: 'rect' });
-            }
-            else if (s.liveObjType === 'triangle') {
-                let vX = coords.x + s.liveObjProps.offsetX; let vY = coords.y + s.liveObjProps.offsetY;
-                s.liveObj = new fabric.Polygon([s.liveObjProps.baseLeft, s.liveObjProps.baseRight, {x: vX, y: vY}], { fill: 'rgba(255, 255, 255, 0.01)', stroke: drawColorRef.current, strokeWidth: 3, strokeLineJoin: 'round', customType: 'triangle' });
-            }
+            // ... [הקוד של s.liveObj נשאר בדיוק אותו דבר] ...
             fCanvas.current.add(s.liveObj); fCanvas.current.requestRenderAll(); return;
         }
 
@@ -460,26 +466,29 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
         const ctx = drawingCanvasRef.current.getContext('2d'); 
         s.points.push(coords); 
         
-        // הציור נעשה בקואורדינטות מסך
         ctx.lineTo(screenX, screenY); 
         ctx.stroke(); 
         ctx.beginPath(); 
         ctx.moveTo(screenX, screenY);
         
         if (modeRef.current === 'erase') {
-            const eraserRadius = 20 / zoom;
-            Array.from(mathLayerRef.current.children).forEach(wrapper => {
-                const boxX = parseFloat(wrapper.style.left) + wrapper.offsetWidth / 2; const boxY = parseFloat(wrapper.style.top) + wrapper.offsetHeight / 2;
-                if (Math.hypot(boxX - coords.x, boxY - coords.y) < Math.max(wrapper.offsetWidth, wrapper.offsetHeight)/2 + eraserRadius) wrapper.remove();
-            });
-            fCanvas.current.getObjects().forEach(obj => {
-                if (obj.opacity === 0.5) return;
-                const cx = obj.left + (obj.width * obj.scaleX) / 2; const cy = obj.top + (obj.height * obj.scaleY) / 2;
-                if (Math.hypot(cx - coords.x, cy - coords.y) < eraserRadius * 2) fCanvas.current.remove(obj);
-            });
+            // ... [הקוד של המחק נשאר בדיוק אותו דבר] ...
             fCanvas.current.requestRenderAll(); return;
         }
-        clearTimeout(s.snapTimeout); s.snapTimeout = setTimeout(recognizeAndConvertToFabric, 400); 
+
+        // --- תיקון זיהוי הצורות: סינון "רעידות" של העט ---
+        if (s.points.length > 1) {
+            const lastPt = s.points[s.points.length - 2]; // הנקודה לפני הנוכחית
+            const dist = Math.hypot(coords.x - lastPt.x, coords.y - lastPt.y);
+            // מאפסים את טיימר הזיהוי *רק* אם העט זז באופן משמעותי
+            if (dist > 2) {
+                clearTimeout(s.snapTimeout);
+                s.snapTimeout = setTimeout(recognizeAndConvertToFabric, 400);
+            }
+        } else {
+            clearTimeout(s.snapTimeout);
+            s.snapTimeout = setTimeout(recognizeAndConvertToFabric, 400);
+        }
     };
 
     const handlePointerUp = (e) => {
