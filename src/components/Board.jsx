@@ -144,51 +144,32 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
         };
         if (viewport) viewport.addEventListener('wheel', handleNativeWheel, { passive: false });
 
+    // ... (הקוד של initCanvas ו-handleResize) ...
 
-       const preventScroll = (e) => {
-            // אנחנו חוסמים את הגלילה של הדפדפן לחלוטין.
-            // גלילת שתי אצבעות תמשיך לעבוד כי היא מנוהלת דרך pointer events.
-            e.preventDefault();
-        };
-        if (viewport) {
-            viewport.addEventListener('touchmove', preventScroll, { passive: false });
-        }
+            // --- חסימת גלילה אגרסיבית למכשירים ניידים ---
+            const preventNativeScroll = (e) => {
+                // חוסמים גלילה אלא אם המשתמש נמצא במצב בחירה (Select) ומנסה לגלול אובייקט ספציפי
+                if (modeRef.current !== 'select') {
+                    e.preventDefault(); 
+                }
+            };
 
-        return () => {
-            window.removeEventListener('resize', handleResize);
-            window.removeEventListener('keydown', handleKeyDown);
-            window.removeEventListener('pointerdown', closeMenu);
-            if (viewport) {
-                viewport.removeEventListener('wheel', handleNativeWheel);
-                viewport.removeEventListener('touchmove', preventScroll); // הוספנו ניקוי חובה
-            }
-            if (fCanvas.current) fCanvas.current.dispose();
-        };
+            // אנחנו שמים את ההאזנה על window ולא על רכיב ספציפי, כדי לתפוס הכל לפני הדפדפן
+            // הגדרת passive: false היא קריטית כאן
+            window.addEventListener('touchmove', preventNativeScroll, { passive: false });
+            window.addEventListener('wheel', preventNativeScroll, { passive: false }); // למקרה שחיברו עכבר לאייפד
 
-        const dCanvas = drawingCanvasRef.current;
-        if (dCanvas) {
-            dCanvas.addEventListener('touchmove', preventScroll, { passive: false });
-        }
-        // ==========================================
-
-
-        return () => {
-            window.removeEventListener('resize', handleResize);
-            window.removeEventListener('keydown', handleKeyDown);
-            window.removeEventListener('pointerdown', closeMenu);
-            if (viewport) viewport.removeEventListener('wheel', handleNativeWheel);
-            
-            // ==========================================
-            // חובה להוסיף גם את שורת הניקוי הזו כאן:
-            // ==========================================
-            if (dCanvas) {
-                dCanvas.removeEventListener('touchmove', preventScroll);
-            }
-            // ==========================================
-
-            if (fCanvas.current) fCanvas.current.dispose();
-        };
-    }, [setMode]); // סיום ה-useEffect
+            return () => {
+                window.removeEventListener('resize', handleResize);
+                window.removeEventListener('keydown', handleKeyDown);
+                window.removeEventListener('pointerdown', closeMenu);
+                
+                window.removeEventListener('touchmove', preventNativeScroll);
+                window.removeEventListener('wheel', preventNativeScroll);
+                
+                if (fCanvas.current) fCanvas.current.dispose();
+            };
+        }, [setMode]); // סיום ה-useEffect
 
     const handleViewportPointerDown = (e) => {
         s.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -605,6 +586,20 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
                 touchAction: 'none' 
             }}>
             <style>{`
+            /* חסימת המחוות של הדפדפנים הניידים */
+                body, html {
+                    margin: 0;
+                    padding: 0;
+                    overflow: hidden; /* מונע כל גלילה טבעית */
+                    overscroll-behavior-y: none; /* חוסם "משיכה לרענון" באנדרואיד וקפיציות ב-iOS */
+                    overscroll-behavior-x: none; /* חוסם החלקה חזרה בהיסטוריה */
+                }
+
+                /* מוודאים שהקונטיינר הראשי שלך גם לא יאפשר מחוות */
+                #viewport {
+                    touch-action: none; /* ההוראה החשובה ביותר - מונעת כל טיפול טבעי במגע */
+                }
+
                 .math-wrapper { position: absolute; direction: ltr !important; unicode-bidi: isolate !important; display: flex; align-items: center; width: max-content; pointer-events: auto; border-radius: 8px; transition: 0.2s border, 0.2s background; border-bottom: 2px solid transparent; }
                 .math-wrapper.active-wrapper { border-bottom: 2px solid rgba(74, 222, 128, 0.5); background: rgba(255, 255, 255, 0.05) !important; }
                 math-field { background: transparent !important; box-shadow: none !important; border: none !important; transform: none !important; position: relative !important; padding: 5px; min-width: 30px; direction: ltr !important; }
@@ -655,14 +650,15 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
                 {/* קנבס הציור יושב בצורה סטטית על המסך כדי לחסוך ביצועים */}
              <canvas id="drawing-canvas" ref={drawingCanvasRef}
                     className={`cursor-${mode}`} 
-                    style={{ 
-                        position: 'absolute', top: 0, left: 0, zIndex: 2, 
-                        width: '100%', height: '100%', // משאירים את ה-CSS כפי שהוא
-                        touchAction: 'none', 
-                        WebkitTouchCallout: 'none',
-                        WebkitUserSelect: 'none',
-                        pointerEvents: (mode === 'draw' || mode === 'erase' || mode === 'text') ? 'auto' : 'none' 
-                    }}
+                            style={{ 
+                    position: 'absolute', top: 0, left: 0, zIndex: 2, 
+                    width: '100%', height: '100%', 
+                    touchAction: 'none', // קריטי
+                    WebkitTouchCallout: 'none',
+                    WebkitUserSelect: 'none',
+                    userSelect: 'none',
+                    pointerEvents: (mode === 'draw' || mode === 'erase' || mode === 'text') ? 'auto' : 'none' 
+                }}
                     onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp}
                 />
                 {/* שכבת המתמטיקה מאופסת לגודל 0 כדי לא לתפוס מקום וירטואלי, האלמנטים בתוכה יקבלו מיקום מוחלט */}
