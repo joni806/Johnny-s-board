@@ -52,22 +52,36 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
         fCanvas.current.requestRenderAll(); 
     };
 
-    useEffect(() => {
+ useEffect(() => {
+        // פונקציית עזר להגדרת קנבס חד התומך במסכי רטינה (אייפד/מובייל)
+        const updateDrawingCanvasResolution = (width, height) => {
+            if (!drawingCanvasRef.current) return;
+            const dpr = window.devicePixelRatio || 1;
+            drawingCanvasRef.current.style.width = width + 'px';
+            drawingCanvasRef.current.style.height = height + 'px';
+            drawingCanvasRef.current.width = Math.round(width * dpr);
+            drawingCanvasRef.current.height = Math.round(height * dpr);
+            
+            const ctx = drawingCanvasRef.current.getContext('2d');
+            ctx.scale(dpr, dpr); // מסנכרן את יחס הציור כדי למנוע עיוותים
+        };
+
         const initCanvas = () => {
             if (fCanvas.current) {
                 fCanvas.current.dispose();
             }
-            // --- הוסף את זה ---
-    // הגדרת הרזולוציה הפנימית לקנבס הציור השקוף
-    if (drawingCanvasRef.current) {
-        drawingCanvasRef.current.width = window.innerWidth;
-        drawingCanvasRef.current.height = window.innerHeight;
-    }
+            
+            const width = window.innerWidth;
+            const height = window.innerHeight;
+
+            // עדכון הקנבס השקוף עם התמיכה החדשה
+            updateDrawingCanvasResolution(width, height);
+
             fCanvas.current = new fabric.Canvas(fabricCanvasElRef.current, {
-                width: window.innerWidth, 
-                height: window.innerHeight, 
+                width: width, 
+                height: height, 
                 selection: true, isDrawingMode: false, 
-                enableRetinaScaling: true, // מומלץ להפעיל לאיכות טקסט וקווים
+                enableRetinaScaling: true, 
                 fireMiddleClick: true, allowTouchScrolling: false, 
                 stopContextMenu: true, renderOnAddRemove: false 
             });
@@ -96,10 +110,7 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
                 fCanvas.current.setHeight(window.innerHeight);
                 fCanvas.current.requestRenderAll();
             }
-            if (drawingCanvasRef.current) {
-        drawingCanvasRef.current.width = window.innerWidth;
-        drawingCanvasRef.current.height = window.innerHeight;
-    }
+            updateDrawingCanvasResolution(window.innerWidth, window.innerHeight);
         };
         window.addEventListener('resize', handleResize);
 
@@ -392,7 +403,24 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
         return wrapper;
     };
 
-    const handlePointerDown = (e) => {
+    // פונקציה אחידה שמחשבת קואורדינטות בדיוק באותו אופן לכל האירועים
+    const getCanvasCoords = (clientX, clientY) => {
+        const rect = drawingCanvasRef.current.getBoundingClientRect();
+        
+        // קואורדינטות פיזיות נקיות על המסך
+        const screenX = clientX - rect.left;
+        const screenY = clientY - rect.top;
+        
+        // קואורדינטות וירטואליות של Fabric
+        const zoom = fCanvas.current.getZoom(); 
+        const vpt = fCanvas.current.viewportTransform;
+        const virtualX = (screenX - vpt[4]) / zoom; 
+        const virtualY = (screenY - vpt[5]) / zoom; 
+        
+        return { screenX, screenY, virtualX, virtualY };
+    };
+
+  const handlePointerDown = (e) => {
         if (s.isPanning) return; 
         if (s.activeBox || (window.mathVirtualKeyboard && window.mathVirtualKeyboard.visible)) { deactivateBox(); return; }
         if (!e.target.closest('.context-menu') && s.editCircles.length > 0) exitNodeEditMode();
@@ -401,16 +429,8 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
             try { e.target.setPointerCapture(e.pointerId); } catch(err){}
         }
 
-        const zoom = fCanvas.current.getZoom(); 
-        const vpt = fCanvas.current.viewportTransform;
-        
-        // קואורדינטות הציור על המסך
-        const screenX = e.nativeEvent.clientX;
-        const screenY = e.nativeEvent.clientY;
-        
-        // קואורדינטות וירטואליות עבור Fabric
-        const virtualX = (screenX - vpt[4]) / zoom; 
-        const virtualY = (screenY - vpt[5]) / zoom; 
+        // שימוש בפונקציה האחידה!
+        const { screenX, screenY, virtualX, virtualY } = getCanvasCoords(e.clientX, e.clientY);
         const coords = { x: virtualX, y: virtualY };
 
         if (modeRef.current === 'select') { 
@@ -425,9 +445,10 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
             s.drawing = true; s.hasSnapped = false; s.points = [coords]; s.liveObj = null;
             const ctx = drawingCanvasRef.current.getContext('2d'); 
             ctx.lineCap = 'round'; ctx.lineJoin = 'round'; 
-            ctx.clearRect(0, 0, window.innerWidth, window.innerHeight); 
+            
+            // ניקוי הקנבס לפי הגודל הנכון שלו
+            ctx.clearRect(0, 0, drawingCanvasRef.current.width, drawingCanvasRef.current.height); 
             ctx.beginPath(); 
-            // מציירים בקואורדינטות של המסך
             ctx.moveTo(screenX, screenY);
             ctx.lineTo(screenX, screenY + 0.01);
             
@@ -437,23 +458,16 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
         }
     };
 
-   const handlePointerMove = (e) => {
+ const handlePointerMove = (e) => {
         if (s.isPanning || !s.drawing) return; 
-        const zoom = fCanvas.current.getZoom(); 
-        const vpt = fCanvas.current.viewportTransform;
         
-        // תיקון האופסט
-        const rect = drawingCanvasRef.current.getBoundingClientRect();
-        const screenX = e.nativeEvent.clientX - rect.left;
-        const screenY = e.nativeEvent.clientY - rect.top;
-        
-        const virtualX = (screenX - vpt[4]) / zoom; 
-        const virtualY = (screenY - vpt[5]) / zoom; 
+        // שימוש באותה פונקציה אחידה בדיוק כמו בלחיצה!
+        const { screenX, screenY, virtualX, virtualY } = getCanvasCoords(e.clientX, e.clientY);
         const coords = { x: virtualX, y: virtualY };
+        const zoom = fCanvas.current.getZoom(); 
         
-        // --- החזרנו את עדכון הצורות - כאן הייתה התקלה של השכבה הלבנה ---
         if (s.liveObj) {
-            fCanvas.current.remove(s.liveObj); // קריטי: מוחק את הצורה הישנה לפני שמצייר חדשה
+            fCanvas.current.remove(s.liveObj);
             
             if (s.liveObjType === 'line') s.liveObj = buildLine(s.liveObjProps.start, coords, drawColorRef.current);
             else if (s.liveObjType === 'arrow') s.liveObj = buildArrow(s.liveObjProps.start, coords, drawColorRef.current);
