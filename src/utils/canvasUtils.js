@@ -48,7 +48,7 @@ const createStarPolygon = (pointsNum, outerRadius, innerRadius) => {
 
 export const createShape = (type, color, center) => {
     let obj = null;
-    const commonProps = { fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: 3, originX: 'center', originY: 'center', left: center.x, top: center.y };
+    const commonProps = { fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: getStrokeWidth(), originX: 'center', originY: 'center', left: center.x, top: center.y };
     const pathProps = { ...commonProps, fill: 'transparent' };
 
     switch(type) {

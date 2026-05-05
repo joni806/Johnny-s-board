@@ -8,6 +8,14 @@ import 'nerdamer/Calculus';
 import 'nerdamer/Solve';
 
 const fabric = fabricPkg.fabric || fabricPkg;
+const getPatternContrastColor = (hexColor) => {
+    if (!hexColor || !hexColor.startsWith('#')) return '255, 255, 255';
+    let r = parseInt(hexColor.slice(1, 3), 16) || 0;
+    let g = parseInt(hexColor.slice(3, 5), 16) || 0;
+    let b = parseInt(hexColor.slice(5, 7), 16) || 0;
+    let luminance = (0.299 * r + 0.587 * g + 0.114 * b);
+    return luminance > 140 ? '0, 0, 0' : '255, 255, 255';
+};
 
 const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize }, ref) => {
     const fabricCanvasElRef = useRef(null);
@@ -15,8 +23,13 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
     const mathLayerRef = useRef(null);
     const viewportRef = useRef(null);
     const fCanvas = useRef(null);
+    const patternBgRef = useRef(null);
 
-    const [boardBg, setBoardBg] = useState('radial-gradient(circle, #2a5244 0%, #1e3d32 100%)');
+   const [boardColor, setBoardColor] = useState('#1e3d32');
+    const [boardPatternType, setBoardPatternType] = useState('grid');
+    const [gridSize, setGridSize] = useState(40);
+    const [showBoardSettings, setShowBoardSettings] = useState(false);
+    const [boardSettingsPos, setBoardSettingsPos] = useState({ x: 0, y: 0 });
     const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, target: null });
 
     const modeRef = useRef(mode);
@@ -30,17 +43,27 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
     const textColorRef = useRef(textColor);
     useEffect(() => { textColorRef.current = textColor; }, [textColor]);
 
-    const s = useRef({
-        drawing: false, points: [], snapTimeout: null, hasSnapped: false, activeBox: null, 
-        historyStack: [], redoStack: [], isLocked: false, isPanning: false, lastX: 0, lastY: 0,
-        liveObj: null, liveObjType: null, liveObjProps: null, editCircles: [], editingOriginalObj: null,
-        wasAutoSelected: false, isEnteringNodeEdit: false, clipboard: null,
-        activePointers: new Map() 
+const s = useRef({
+    drawing: false, points: [], snapTimeout: null, hasSnapped: false, activeBox: null, 
+    historyStack: [], redoStack: [], isLocked: false, isPanning: false, lastX: 0, lastY: 0,
+    liveObj: null, liveObjType: null, liveObjProps: null, editCircles: [], editingOriginalObj: null,
+    wasAutoSelected: false, isEnteringNodeEdit: false, clipboard: null,
+    activePointers: new Map(),
+    multiTouchStartTime: null,
+    multiTouchInitialPositions: new Map(),
+    multiTouchMoved: false,
+    multiTouchMaxFingers: 0,
+    pinchInitialDist: 0,
+    pinchInitialZoom: 1,
+    longPressTimer: null,
+    longPressStartX: 0,
+    longPressStartY: 0,
     }).current;
 
-   const syncCustomLayers = () => {
+const syncCustomLayers = () => {
         if (!fCanvas.current) return;
         const vpt = fCanvas.current.viewportTransform; 
+        const zoom = fCanvas.current.getZoom(); // שליפת רמת הזום
         const transform = `matrix(${vpt[0]}, ${vpt[1]}, ${vpt[2]}, ${vpt[3]}, ${vpt[4]}, ${vpt[5]})`;
         
         // שכבת המתמטיקה זזה בהתאם למצלמה של פבריק
@@ -48,9 +71,20 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
             mathLayerRef.current.style.transform = transform;
             mathLayerRef.current.style.transformOrigin = '0 0';
         }
+
+        // שכבת הרקע (משבצות/שורות/נקודות) מסתנכרנת עם הזום והתזוזה
+        if (patternBgRef.current) {
+            // הכפלת גודל המשבצת בזום הנוכחי
+            patternBgRef.current.style.backgroundSize = `${gridSize * zoom}px ${gridSize * zoom}px`;
+            // הזזת הרקע יחד עם המצלמה
+            patternBgRef.current.style.backgroundPosition = `${vpt[4]}px ${vpt[5]}px`;
+        }
         
         fCanvas.current.requestRenderAll(); 
     };
+    useEffect(() => {
+        syncCustomLayers();
+    }, [boardPatternType, boardColor, gridSize]);
 
  useEffect(() => {
         // פונקציית עזר להגדרת קנבס חד התומך במסכי רטינה (אייפד/מובייל)
@@ -133,6 +167,20 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
         };
         
         window.addEventListener('keydown', handleKeyDown, { passive: false });
+        const handleGlobalPointerGone = (e) => {
+    if (!s.activePointers.has(e.pointerId)) return;
+    s.activePointers.delete(e.pointerId);
+    if (s.activePointers.size === 0) {
+        s.isPanning = false;
+        s.multiTouchStartTime = null;
+        s.multiTouchMoved = false;
+        s.multiTouchMaxFingers = 0;
+        s.multiTouchInitialPositions = new Map();
+        if (fCanvas.current) fCanvas.current.selection = true;
+    }
+};
+window.addEventListener('pointerup', handleGlobalPointerGone);
+window.addEventListener('pointercancel', handleGlobalPointerGone);
         const closeMenu = (e) => { if (!e.target.closest('.context-menu')) setContextMenu(prev => ({...prev, visible: false})); };
         window.addEventListener('pointerdown', closeMenu);
 
@@ -174,6 +222,8 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
                 window.removeEventListener('resize', handleResize);
                 window.removeEventListener('keydown', handleKeyDown);
                 window.removeEventListener('pointerdown', closeMenu);
+                window.removeEventListener('pointerup', handleGlobalPointerGone);
+window.removeEventListener('pointercancel', handleGlobalPointerGone);
                 
                 window.removeEventListener('touchmove', preventNativeScroll);
                 window.removeEventListener('wheel', preventNativeScroll);
@@ -182,43 +232,134 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
             };
         }, [setMode]); // סיום ה-useEffect
 
-    const handleViewportPointerDown = (e) => {
-        s.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-        if (s.activePointers.size === 2 || e.shiftKey) {
-            s.isPanning = true;
-            s.drawing = false; 
-            if (drawingCanvasRef.current) drawingCanvasRef.current.getContext('2d').clearRect(0, 0, window.innerWidth, window.innerHeight);
-            if (fCanvas.current) { fCanvas.current.discardActiveObject(); fCanvas.current.selection = false; }
-            const pts = Array.from(s.activePointers.values());
-            s.lastX = s.activePointers.size === 2 ? (pts[0].x + pts[1].x) / 2 : e.clientX;
-            s.lastY = s.activePointers.size === 2 ? (pts[0].y + pts[1].y) / 2 : e.clientY;
-        }
-    };
+ const handleViewportPointerDown = (e) => {
+    s.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
-    const handleViewportPointerMove = (e) => {
-        if (s.activePointers.has(e.pointerId)) s.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-        if (s.isPanning && fCanvas.current) {
-            e.stopPropagation(); 
-            let currentX = e.clientX; let currentY = e.clientY;
-            if (s.activePointers.size === 2) {
-                const pts = Array.from(s.activePointers.values());
-                currentX = (pts[0].x + pts[1].x) / 2; currentY = (pts[0].y + pts[1].y) / 2;
+    // לחיצה ארוכה — רק אצבע אחת
+    if (s.activePointers.size === 1) {
+        s.longPressStartX = e.clientX;
+        s.longPressStartY = e.clientY;
+        s.longPressTimer = setTimeout(() => {
+            s.longPressTimer = null;
+            setBoardSettingsPos({ x: e.clientX, y: e.clientY });
+            setShowBoardSettings(true);
+        }, 500);
+    }
+
+    if (s.activePointers.size >= 2 || e.shiftKey) {
+        // ביטול לחיצה ארוכה כשנוגעת אצבע שנייה
+        if (s.longPressTimer) { clearTimeout(s.longPressTimer); s.longPressTimer = null; }
+
+        if (s.activePointers.size === 2) {
+            s.multiTouchStartTime = Date.now();
+            s.multiTouchMoved = false;
+            s.multiTouchMaxFingers = 2;
+            s.multiTouchInitialPositions = new Map(s.activePointers);
+
+            // אתחול פינץ'
+            const pts = Array.from(s.activePointers.values());
+            s.pinchInitialDist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+            s.pinchInitialZoom = fCanvas.current ? fCanvas.current.getZoom() : 1;
+        }
+        if (s.activePointers.size > s.multiTouchMaxFingers) {
+            s.multiTouchMaxFingers = s.activePointers.size;
+        }
+
+        s.drawing = false;
+        if (drawingCanvasRef.current) drawingCanvasRef.current.getContext('2d').clearRect(0, 0, window.innerWidth, window.innerHeight);
+        if (fCanvas.current) { fCanvas.current.discardActiveObject(); fCanvas.current.selection = false; }
+        const pts = Array.from(s.activePointers.values());
+        s.lastX = (pts[0].x + pts[1].x) / 2;
+        s.lastY = (pts[0].y + pts[1].y) / 2;
+    }
+};
+
+const handleViewportPointerMove = (e) => {
+    if (s.activePointers.has(e.pointerId)) s.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    // ביטול לחיצה ארוכה אם האצבע זזה
+    if (s.longPressTimer) {
+        const moved = Math.hypot(e.clientX - s.longPressStartX, e.clientY - s.longPressStartY);
+        if (moved > 8) { clearTimeout(s.longPressTimer); s.longPressTimer = null; }
+    }
+
+    // פינץ' + פאן — שתי אצבעות
+    if (s.activePointers.size === 2 && fCanvas.current) {
+        const pts = Array.from(s.activePointers.values());
+        const currentMidX = (pts[0].x + pts[1].x) / 2;
+        const currentMidY = (pts[0].y + pts[1].y) / 2;
+        const currentDist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+
+        // בדיקה אם זה מחווה (לא טאפ)
+        let maxMovement = 0;
+        s.activePointers.forEach((pos, id) => {
+            const initial = s.multiTouchInitialPositions.get(id);
+            if (initial) { const d = Math.hypot(pos.x - initial.x, pos.y - initial.y); if (d > maxMovement) maxMovement = d; }
+        });
+
+        if (maxMovement > 10 || Math.abs(currentDist - s.pinchInitialDist) > 8) {
+            s.multiTouchMoved = true;
+            s.isPanning = true;
+        }
+
+        if (s.multiTouchMoved) {
+            const rect = viewportRef.current.getBoundingClientRect();
+
+            // זום פינץ' (ללא הגבלה)
+            if (s.pinchInitialDist > 5) {
+                const newZoom = Math.max(0.02, Math.min(100, s.pinchInitialZoom * (currentDist / s.pinchInitialDist)));
+                fCanvas.current.zoomToPoint({ x: currentMidX - rect.left, y: currentMidY - rect.top }, newZoom);
             }
-            const delta = new fabric.Point(currentX - s.lastX, currentY - s.lastY);
+
+            // פאן לפי תנועת נקודת האמצע
+            const delta = new fabric.Point(currentMidX - s.lastX, currentMidY - s.lastY);
             fCanvas.current.relativePan(delta);
             syncCustomLayers();
-            s.lastX = currentX; s.lastY = currentY;
+
+            s.lastX = currentMidX;
+            s.lastY = currentMidY;
+        }
+        return;
+    }
+
+    // פאן אצבע + Shift (מחשב)
+    if (s.isPanning && fCanvas.current && s.activePointers.size < 2) {
+        e.stopPropagation();
+        const delta = new fabric.Point(e.clientX - s.lastX, e.clientY - s.lastY);
+        fCanvas.current.relativePan(delta);
+        syncCustomLayers();
+        s.lastX = e.clientX; s.lastY = e.clientY;
+    }
+};
+
+const handleViewportPointerUp = (e) => {
+    if (s.longPressTimer) { clearTimeout(s.longPressTimer); s.longPressTimer = null; }
+    s.activePointers.delete(e.pointerId);
+
+        if (s.activePointers.size === 0) {
+            // כל האצבעות עלו — עכשיו בודקים טאפ
+            const touchDuration = Date.now() - (s.multiTouchStartTime || 0);
+            const wasTap = !s.multiTouchMoved && touchDuration < 300 && s.multiTouchMaxFingers >= 2;
+
+            if (wasTap && s.multiTouchMaxFingers === 2) undo();
+            else if (wasTap && s.multiTouchMaxFingers >= 3) redo();
+
+            // מאפסים הכל רק אחרי הבדיקה
+            s.isPanning = false;
+            s.multiTouchStartTime = null;
+            s.multiTouchMoved = false;
+            s.multiTouchMaxFingers = 0;
+            s.multiTouchInitialPositions = new Map();
+            s.activePointers.clear();
+            if (fCanvas.current) fCanvas.current.selection = true;
+
+        } else if (s.activePointers.size < 2) {
+            // נשארה אצבע אחת — עוצרים פאן אבל שומרים את מידע הטאפ!
+            s.isPanning = false;
+            if (fCanvas.current) fCanvas.current.selection = true;
         }
     };
 
-    const handleViewportPointerUp = (e) => {
-        s.activePointers.delete(e.pointerId);
-        if (s.isPanning && s.activePointers.size < 2 && !e.shiftKey) {
-            s.isPanning = false;
-            s.activePointers.clear(); 
-            if (fCanvas.current) fCanvas.current.selection = true; 
-        }
-    };
 
     const triggerContextMenu = (clientX, clientY) => {
         if (!fCanvas.current) return;
@@ -230,10 +371,11 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
     };
 
     const handleNativeContextMenu = (e) => { e.preventDefault(); triggerContextMenu(e.clientX, e.clientY); };
+    const getStrokeWidth = () => fCanvas.current ? 3 / fCanvas.current.getZoom() : 3;
 
-    const buildLine = (p1, p2, color) => { let l = new fabric.Line([p1.x, p1.y, p2.x, p2.y], { stroke: color, strokeWidth: 3, strokeLineCap: 'round', selectable: true, hasControls: true }); l.customType = 'line'; return l; };
-    const buildArrow = (start, end, color) => { let angle = Math.atan2(end.y - start.y, end.x - start.x); let headlen = 20; const pathData = `M ${start.x} ${start.y} L ${end.x} ${end.y} L ${end.x - headlen * Math.cos(angle - Math.PI / 6)} ${end.y - headlen * Math.sin(angle - Math.PI / 6)} M ${end.x} ${end.y} L ${end.x - headlen * Math.cos(angle + Math.PI / 6)} ${end.y - headlen * Math.sin(angle + Math.PI / 6)}`; let p = new fabric.Path(pathData, { fill: 'transparent', stroke: color, strokeWidth: 3, strokeLineCap: 'round', strokeLineJoin: 'round', selectable: true }); p.customType = 'arrow'; return p; };
-    const buildCurve = (start, cp, end, color) => { const pathData = `M ${start.x} ${start.y} Q ${cp.x} ${cp.y} ${end.x} ${end.y}`; let p = new fabric.Path(pathData, { fill: 'transparent', stroke: color, strokeWidth: 3, strokeLineCap: 'round', selectable: true }); p.customType = 'curve'; return p; };
+    const buildLine = (p1, p2, color) => { let l = new fabric.Line([p1.x, p1.y, p2.x, p2.y], { stroke: color, strokeWidth: getStrokeWidth(), strokeLineCap: 'round', selectable: true, hasControls: true }); l.customType = 'line'; return l; };
+    const buildArrow = (start, end, color) => { let angle = Math.atan2(end.y - start.y, end.x - start.x); let headlen = 20; const pathData = `M ${start.x} ${start.y} L ${end.x} ${end.y} L ${end.x - headlen * Math.cos(angle - Math.PI / 6)} ${end.y - headlen * Math.sin(angle - Math.PI / 6)} M ${end.x} ${end.y} L ${end.x - headlen * Math.cos(angle + Math.PI / 6)} ${end.y - headlen * Math.sin(angle + Math.PI / 6)}`; let p = new fabric.Path(pathData, { fill: 'transparent', stroke: color, strokeWidth: getStrokeWidth(), strokeLineCap: 'round', strokeLineJoin: 'round', selectable: true }); p.customType = 'arrow'; return p; };
+    const buildCurve = (start, cp, end, color) => { const pathData = `M ${start.x} ${start.y} Q ${cp.x} ${cp.y} ${end.x} ${end.y}`; let p = new fabric.Path(pathData, { fill: 'transparent', stroke: color, strokeWidth: getStrokeWidth(), strokeLineCap: 'round', selectable: true }); p.customType = 'curve'; return p; };
 
     const exitNodeEditMode = () => {
         if (s.editCircles.length > 0) {
@@ -257,18 +399,18 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
 
         if (obj.customType === 'triangle' && obj.points) {
             const p0 = getAbs(obj.points[0]); const p1 = getAbs(obj.points[1]); const p2 = getAbs(obj.points[2]);
-            const topN = makeNode(p0.x, p0.y, (c) => updateNodeGeometry(new fabric.Polygon([{x: c.left, y: c.top}, {x: brN.left, y: brN.top}, {x: blN.left, y: blN.top}], { fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: 3, customType: 'triangle' })));
-            const brN = makeNode(p1.x, p1.y, (c) => updateNodeGeometry(new fabric.Polygon([{x: topN.left, y: topN.top}, {x: c.left, y: c.top}, {x: blN.left, y: blN.top}], { fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: 3, customType: 'triangle' })));
-            const blN = makeNode(p2.x, p2.y, (c) => updateNodeGeometry(new fabric.Polygon([{x: topN.left, y: topN.top}, {x: brN.left, y: brN.top}, {x: c.left, y: c.top}], { fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: 3, customType: 'triangle' })));
+            const topN = makeNode(p0.x, p0.y, (c) => updateNodeGeometry(new fabric.Polygon([{x: c.left, y: c.top}, {x: brN.left, y: brN.top}, {x: blN.left, y: blN.top}], { fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'triangle' })));
+            const brN = makeNode(p1.x, p1.y, (c) => updateNodeGeometry(new fabric.Polygon([{x: topN.left, y: topN.top}, {x: c.left, y: c.top}, {x: blN.left, y: blN.top}], { fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'triangle' })));
+            const blN = makeNode(p2.x, p2.y, (c) => updateNodeGeometry(new fabric.Polygon([{x: topN.left, y: topN.top}, {x: brN.left, y: brN.top}, {x: c.left, y: c.top}], { fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'triangle' })));
         } else if (obj.customType === 'rect') {
             const tl = obj.getPointByOrigin('left', 'top'); const br = obj.getPointByOrigin('right', 'bottom');
             const tlN = makeNode(tl.x, tl.y, (c) => {
                 let newL = Math.min(c.left, brN.left); let newT = Math.min(c.top, brN.top); let newW = Math.abs(brN.left - c.left); let newH = Math.abs(brN.top - c.top);
-                updateNodeGeometry(new fabric.Rect({ originX: 'left', originY: 'top', left: newL, top: newT, width: newW, height: newH, fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: 3, customType: 'rect' }));
+                updateNodeGeometry(new fabric.Rect({ originX: 'left', originY: 'top', left: newL, top: newT, width: newW, height: newH, fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'rect' }));
             });
             const brN = makeNode(br.x, br.y, (c) => {
                 let newL = Math.min(tlN.left, c.left); let newT = Math.min(tlN.top, c.top); let newW = Math.abs(c.left - tlN.left); let newH = Math.abs(c.top - tlN.top);
-                updateNodeGeometry(new fabric.Rect({ originX: 'left', originY: 'top', left: newL, top: newT, width: newW, height: newH, fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: 3, customType: 'rect' }));
+                updateNodeGeometry(new fabric.Rect({ originX: 'left', originY: 'top', left: newL, top: newT, width: newW, height: newH, fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'rect' }));
             });
         } else if (obj.customType === 'curve' && obj.path) {
             const pStart = getAbs({x: obj.path[0][1], y: obj.path[0][2]}); const pCp = getAbs({x: obj.path[1][1], y: obj.path[1][2]}); const pEnd = getAbs({x: obj.path[1][3], y: obj.path[1][4]});
@@ -285,8 +427,8 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
             const eN = makeNode(p2.x, p2.y, (c) => updateNodeGeometry(buildLine({x: sN.left, y: sN.top}, {x: c.left, y: c.top}, color)));
         } else if (obj.customType === 'ellipse') {
             const center = obj.getPointByOrigin('center', 'center'); const rx = obj.rx * obj.scaleX; const ry = obj.ry * obj.scaleY;
-            const rN = makeNode(center.x + rx, center.y, (c) => updateNodeGeometry(new fabric.Ellipse({ originX: 'center', originY: 'center', left: center.x, top: center.y, rx: Math.max(1, Math.abs(c.left - center.x)), ry: Math.max(1, Math.abs(bN.top - center.y)), fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: 3, customType: 'ellipse' })));
-            const bN = makeNode(center.x, center.y + ry, (c) => updateNodeGeometry(new fabric.Ellipse({ originX: 'center', originY: 'center', left: center.x, top: center.y, rx: Math.max(1, Math.abs(rN.left - center.x)), ry: Math.max(1, Math.abs(c.top - center.y)), fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: 3, customType: 'ellipse' })));
+            const rN = makeNode(center.x + rx, center.y, (c) => updateNodeGeometry(new fabric.Ellipse({ originX: 'center', originY: 'center', left: center.x, top: center.y, rx: Math.max(1, Math.abs(c.left - center.x)), ry: Math.max(1, Math.abs(bN.top - center.y)), fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'ellipse' })));
+            const bN = makeNode(center.x, center.y + ry, (c) => updateNodeGeometry(new fabric.Ellipse({ originX: 'center', originY: 'center', left: center.x, top: center.y, rx: Math.max(1, Math.abs(rN.left - center.x)), ry: Math.max(1, Math.abs(c.top - center.y)), fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'ellipse' })));
         }
         fCanvas.current.requestRenderAll(); s.isEnteringNodeEdit = false; 
     };
@@ -321,14 +463,30 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
         s.historyStack.push(stateStr); restore(JSON.parse(stateStr));
     };
 
-    const restore = (state) => {
-        deactivateBox(false);
-        fCanvas.current.loadFromJSON(state.fabric, () => {
-            fCanvas.current.requestRenderAll(); mathLayerRef.current.innerHTML = '';
-            state.math.forEach(data => { mathLayerRef.current.appendChild(createMathFieldDOM(data.left, data.top, data.value, data.size, data.color)); });
-            setTimeout(() => { s.isLocked = false; }, 100);
+const restore = (state) => {
+    deactivateBox(false);
+
+    let done = false;
+    const finish = () => {
+        if (done) return; // מונע הרצה כפולה
+        done = true;
+        fCanvas.current.requestRenderAll();
+        mathLayerRef.current.innerHTML = '';
+        state.math.forEach(data => {
+            mathLayerRef.current.appendChild(
+                createMathFieldDOM(data.left, data.top, data.value, data.size, data.color)
+            );
         });
+        s.isLocked = false; // ← משחרר את הנעילה!
     };
+
+    // תמיכה בשתי גרסאות של Fabric:
+    // v5 = callback, v6 = Promise
+    const result = fCanvas.current.loadFromJSON(state.fabric, finish);
+    if (result && typeof result.then === 'function') {
+        result.then(finish).catch(finish);
+    }
+};
 
     const getCenterPos = () => {
         if (!fCanvas.current) return { x: window.innerWidth/2, y: window.innerHeight/2 };
@@ -421,7 +579,7 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
     };
 
   const handlePointerDown = (e) => {
-        if (s.isPanning) return; 
+       if (s.isPanning || s.activePointers.size >= 2) return;
         if (s.activeBox || (window.mathVirtualKeyboard && window.mathVirtualKeyboard.visible)) { deactivateBox(); return; }
         if (!e.target.closest('.context-menu') && s.editCircles.length > 0) exitNodeEditMode();
 
@@ -459,7 +617,7 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
     };
 
  const handlePointerMove = (e) => {
-        if (s.isPanning || !s.drawing) return; 
+        if (s.isPanning || !s.drawing || s.activePointers.size >= 2) return;
         
         // שימוש באותה פונקציה אחידה בדיוק כמו בלחיצה!
         const { screenX, screenY, virtualX, virtualY } = getCanvasCoords(e.clientX, e.clientY);
@@ -479,17 +637,17 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
             else if (s.liveObjType === 'ellipse') {
                 let newRx = Math.max(1, Math.abs(coords.x - s.liveObjProps.cx) + s.liveObjProps.offsetRx); 
                 let newRy = Math.max(1, Math.abs(coords.y - s.liveObjProps.cy) + s.liveObjProps.offsetRy);
-                s.liveObj = new fabric.Ellipse({ originX: 'center', originY: 'center', left: s.liveObjProps.cx, top: s.liveObjProps.cy, rx: newRx, ry: newRy, fill: 'rgba(255, 255, 255, 0.01)', stroke: drawColorRef.current, strokeWidth: 3, customType: 'ellipse' });
+                s.liveObj = new fabric.Ellipse({ originX: 'center', originY: 'center', left: s.liveObjProps.cx, top: s.liveObjProps.cy, rx: newRx, ry: newRy, fill: 'rgba(255, 255, 255, 0.01)', stroke: drawColorRef.current, strokeWidth: getStrokeWidth(), customType: 'ellipse' });
             }
             else if (s.liveObjType === 'rect') {
                 let vX = coords.x + s.liveObjProps.offsetX; let vY = coords.y + s.liveObjProps.offsetY; 
                 let newL = Math.min(s.liveObjProps.anchorX, vX); let newT = Math.min(s.liveObjProps.anchorY, vY);
                 let w = Math.max(1, Math.abs(vX - s.liveObjProps.anchorX)); let h = Math.max(1, Math.abs(vY - s.liveObjProps.anchorY));
-                s.liveObj = new fabric.Rect({ originX: 'left', originY: 'top', left: newL, top: newT, width: w, height: h, fill: 'rgba(255, 255, 255, 0.01)', stroke: drawColorRef.current, strokeWidth: 3, customType: 'rect' });
+                s.liveObj = new fabric.Rect({ originX: 'left', originY: 'top', left: newL, top: newT, width: w, height: h, fill: 'rgba(255, 255, 255, 0.01)', stroke: drawColorRef.current, strokeWidth: getStrokeWidth(), customType: 'rect' });
             }
             else if (s.liveObjType === 'triangle') {
                 let vX = coords.x + s.liveObjProps.offsetX; let vY = coords.y + s.liveObjProps.offsetY;
-                s.liveObj = new fabric.Polygon([s.liveObjProps.baseLeft, s.liveObjProps.baseRight, {x: vX, y: vY}], { fill: 'rgba(255, 255, 255, 0.01)', stroke: drawColorRef.current, strokeWidth: 3, strokeLineJoin: 'round', customType: 'triangle' });
+                s.liveObj = new fabric.Polygon([s.liveObjProps.baseLeft, s.liveObjProps.baseRight, {x: vX, y: vY}], { fill: 'rgba(255, 255, 255, 0.01)', stroke: drawColorRef.current, strokeWidth: getStrokeWidth(), strokeLineJoin: 'round', customType: 'triangle' });
             }
             
             fCanvas.current.add(s.liveObj); 
@@ -550,7 +708,7 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
     const convertToScribble = () => {
         if(s.points.length < 2) return;
         const pathData = s.points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
-        const pathObj = new fabric.Path(pathData, { fill: 'transparent', stroke: drawColorRef.current, strokeWidth: 3, strokeLineCap: 'round', strokeLineJoin: 'round', selectable: true });
+        const pathObj = new fabric.Path(pathData, { fill: 'transparent', stroke: drawColorRef.current, strokeWidth: getStrokeWidth(), strokeLineCap: 'round', strokeLineJoin: 'round', selectable: true });
         fCanvas.current.add(pathObj); fCanvas.current.requestRenderAll(); saveState(); s.points = [];
     };
 
@@ -567,9 +725,9 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
         else if (endDist < Math.max(width, height) * 0.25) { 
             const cx = minX + width / 2; const cy = minY + height / 2; let isEllipse = true;
             for(let p of s.points) { if (Math.hypot((p.x - cx) / width, (p.y - cy) / height) > 0.65) { isEllipse = false; break; } }
-            if (isEllipse) { let rx = width / 2; let ry = height / 2; let offsetRx = rx - Math.abs(end.x - cx); let offsetRy = ry - Math.abs(end.y - cy); objToAdd = new fabric.Ellipse({ originX: 'center', originY: 'center', left: cx, top: cy, rx: rx, ry: ry, fill: 'rgba(255, 255, 255, 0.01)', stroke: drawColorRef.current, strokeWidth: 3 }); objToAdd.customType = 'ellipse'; objType = 'ellipse'; objProps = { cx: cx, cy: cy, offsetRx: offsetRx, offsetRy: offsetRy }; 
+            if (isEllipse) { let rx = width / 2; let ry = height / 2; let offsetRx = rx - Math.abs(end.x - cx); let offsetRy = ry - Math.abs(end.y - cy); objToAdd = new fabric.Ellipse({ originX: 'center', originY: 'center', left: cx, top: cy, rx: rx, ry: ry, fill: 'rgba(255, 255, 255, 0.01)', stroke: drawColorRef.current, strokeWidth: getStrokeWidth() }); objToAdd.customType = 'ellipse'; objType = 'ellipse'; objProps = { cx: cx, cy: cy, offsetRx: offsetRx, offsetRy: offsetRy }; 
             } else { let topPoints = s.points.filter(p => p.y < minY + height * 0.2); let bottomPoints = s.points.filter(p => p.y > maxY - height * 0.2); let topWidth = topPoints.length > 0 ? Math.max(...topPoints.map(p=>p.x)) - Math.min(...topPoints.map(p=>p.x)) : 0; let bottomWidth = bottomPoints.length > 0 ? Math.max(...bottomPoints.map(p=>p.x)) - Math.min(...bottomPoints.map(p=>p.x)) : 0;
-                if (bottomWidth > width * 0.5 && topWidth < width * 0.4) { let offsetX = cx - end.x; let offsetY = minY - end.y; objToAdd = new fabric.Polygon([{x: cx, y: minY}, {x: maxX, y: maxY}, {x: minX, y: maxY}], { fill: 'rgba(255, 255, 255, 0.01)', stroke: drawColorRef.current, strokeWidth: 3 }); objToAdd.customType = 'triangle'; objType = 'triangle'; objProps = { baseLeft: {x: minX, y: maxY}, baseRight: {x: maxX, y: maxY}, offsetX: offsetX, offsetY: offsetY }; } else { let anchorX = (end.x > cx) ? minX : maxX; let anchorY = (end.y > cy) ? minY : maxY; let cornerX = (end.x > cx) ? maxX : minX; let cornerY = (end.y > cy) ? maxY : minY; let offsetX = cornerX - end.x; let offsetY = cornerY - end.y; objToAdd = new fabric.Rect({ originX: 'left', originY: 'top', left: minX, top: minY, width: width, height: height, fill: 'rgba(255, 255, 255, 0.01)', stroke: drawColorRef.current, strokeWidth: 3 }); objToAdd.customType = 'rect'; objType = 'rect'; objProps = { anchorX: anchorX, anchorY: anchorY, offsetX: offsetX, offsetY: offsetY }; }
+                if (bottomWidth > width * 0.5 && topWidth < width * 0.4) { let offsetX = cx - end.x; let offsetY = minY - end.y; objToAdd = new fabric.Polygon([{x: cx, y: minY}, {x: maxX, y: maxY}, {x: minX, y: maxY}], { fill: 'rgba(255, 255, 255, 0.01)', stroke: drawColorRef.current, strokeWidth: getStrokeWidth() }); objToAdd.customType = 'triangle'; objType = 'triangle'; objProps = { baseLeft: {x: minX, y: maxY}, baseRight: {x: maxX, y: maxY}, offsetX: offsetX, offsetY: offsetY }; } else { let anchorX = (end.x > cx) ? minX : maxX; let anchorY = (end.y > cy) ? minY : maxY; let cornerX = (end.x > cx) ? maxX : minX; let cornerY = (end.y > cy) ? maxY : minY; let offsetX = cornerX - end.x; let offsetY = cornerY - end.y; objToAdd = new fabric.Rect({ originX: 'left', originY: 'top', left: minX, top: minY, width: width, height: height, fill: 'rgba(255, 255, 255, 0.01)', stroke: drawColorRef.current, strokeWidth: getStrokeWidth() }); objToAdd.customType = 'rect'; objType = 'rect'; objProps = { anchorX: anchorX, anchorY: anchorY, offsetX: offsetX, offsetY: offsetY }; }
             }
         } 
         else { let maxPerpDist = 0; let extremePoint = null; let A = end.y - start.y; let B = -(end.x - start.x); let C = end.x * start.y - end.y * start.x; let denom = Math.hypot(A, B); for (let p of s.points) { let dist = Math.abs(A * p.x + B * p.y + C) / denom; if (dist > maxPerpDist) { maxPerpDist = dist; extremePoint = p; } }
@@ -588,6 +746,7 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
     const handleCopy = () => { if (contextMenu.target) { contextMenu.target.clone((cloned) => { s.clipboard = cloned; setContextMenu(prev => ({...prev, visible: false})); }); }};
     const handlePaste = () => { if (s.clipboard) { s.clipboard.clone((cloned) => { fCanvas.current.discardActiveObject(); cloned.set({ left: cloned.left + 20, top: cloned.top + 20, evented: true }); fCanvas.current.add(cloned); s.clipboard.top += 20; s.clipboard.left += 20; fCanvas.current.setActiveObject(cloned); fCanvas.current.requestRenderAll(); saveState(); }); } setContextMenu(prev => ({...prev, visible: false})); };
 
+    const patternColorRGB = getPatternContrastColor(boardColor);
     return (
         <div id="viewport" dir="ltr" ref={viewportRef} onContextMenu={handleNativeContextMenu} 
             onPointerDownCapture={handleViewportPointerDown}
@@ -624,6 +783,98 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
                 .cm-btn:hover { background: rgba(255,255,255,0.2); }
             `}</style>
             
+            {showBoardSettings && (
+    <>
+        <div style={{ position: 'fixed', inset: 0, zIndex: 10000 }}
+             onClick={() => setShowBoardSettings(false)} />
+        <div dir="rtl" style={{
+            position: 'fixed',
+            top: Math.min(boardSettingsPos.y, window.innerHeight - 420),
+            left: Math.max(10, Math.min(boardSettingsPos.x - 130, window.innerWidth - 280)),
+            zIndex: 10001,
+            background: 'rgba(18, 18, 20, 0.97)',
+            backdropFilter: 'blur(28px)',
+            border: '1px solid rgba(255,255,255,0.08)',
+            borderRadius: '20px',
+            padding: '20px',
+            boxShadow: '0 24px 64px rgba(0,0,0,0.7)',
+            color: 'white', width: '264px',
+        }}>
+
+            {/* צבע לוח */}
+            <div style={{ marginBottom: '18px' }}>
+                <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '10px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>צבע לוח</div>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                    {[
+                        { color: '#1e3d32', label: 'ירוק' },
+                        { color: '#0f172a', label: 'כחול לילה' },
+                        { color: '#1e1e2e', label: 'כחול כהה' },
+                        { color: '#1a1a1a', label: 'שחור' },
+                        { color: '#1c1917', label: 'חום' },
+                        { color: '#1e1b4b', label: 'סגול' },
+                        { color: '#14532d', label: 'ירוק בהיר' },
+                        { color: '#431407', label: 'אדום כהה' },
+                        { color: '#ffffff', label: 'לבן' },
+                    ].map(p => (
+                        <button key={p.color} title={p.label} onClick={() => setBoardColor(p.color)} style={{
+                            width: '28px', height: '28px', borderRadius: '8px',
+                            background: p.color, cursor: 'pointer', transition: '0.15s',
+                            border: boardColor === p.color ? '2px solid #4ade80' : '1px solid rgba(255,255,255,0.15)',
+                            transform: boardColor === p.color ? 'scale(1.15)' : 'scale(1)',
+                        }} />
+                    ))}
+                    <label title="צבע מותאם אישית" style={{ position: 'relative', cursor: 'pointer' }}>
+                        <div style={{
+                            width: '28px', height: '28px', borderRadius: '8px',
+                            background: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)',
+                            border: '1px solid rgba(255,255,255,0.3)',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px',
+                        }}>🎨</div>
+                        <input type="color" value={boardColor} onChange={e => setBoardColor(e.target.value)}
+                            style={{ position: 'absolute', opacity: 0, inset: 0, cursor: 'pointer', width: '100%', height: '100%' }} />
+                    </label>
+                </div>
+            </div>
+
+            {/* סוג לוח */}
+            <div style={{ marginBottom: '18px' }}>
+                <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '10px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>סוג לוח</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+                    {[
+                        { type: 'none', label: 'חלק', icon: '◻' },
+                        { type: 'grid', label: 'משובץ', icon: '▦' },
+                        { type: 'lines', label: 'שורות', icon: '≡' },
+                        { type: 'dots', label: 'נקודות', icon: '⠿' },
+                    ].map(opt => (
+                        <button key={opt.type} onClick={() => setBoardPatternType(opt.type)} style={{
+                            padding: '9px 12px', borderRadius: '10px', border: 'none',
+                            background: boardPatternType === opt.type ? 'rgba(74,222,128,0.15)' : 'rgba(255,255,255,0.05)',
+                            color: boardPatternType === opt.type ? '#4ade80' : '#a1a1aa',
+                            outline: boardPatternType === opt.type ? '1px solid rgba(74,222,128,0.35)' : 'none',
+                            cursor: 'pointer', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px',
+                            transition: '0.15s',
+                        }}>
+                            <span style={{ fontSize: '16px' }}>{opt.icon}</span> {opt.label}
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+            <div style={{ height: '1px', background: 'rgba(255,255,255,0.07)', margin: '4px 0 14px' }} />
+
+            {/* פעולות */}
+            <button onClick={() => {
+                if (fCanvas.current) { fCanvas.current.setViewportTransform([1,0,0,1,0,0]); syncCustomLayers(); }
+                setShowBoardSettings(false);
+            }} style={{
+                width: '100%', padding: '9px', borderRadius: '10px', border: 'none',
+                background: 'rgba(255,255,255,0.06)', color: '#a1a1aa',
+                cursor: 'pointer', fontSize: '13px', marginBottom: '6px', textAlign: 'center',
+            }}>🔍 אפס זום ל-100%</button>
+        </div>
+    </>
+)}
+
             {contextMenu.visible && (
                 <div className="context-menu" dir="rtl" style={{ position: 'fixed', top: contextMenu.y, left: contextMenu.x, zIndex: 10000, background: 'rgba(28, 28, 30, 0.95)', backdropFilter: 'blur(20px)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px', padding: '12px', boxShadow: '0 10px 30px rgba(0,0,0,0.5)', color: 'white', display: 'flex', flexDirection: 'column', gap: '10px', minWidth: '150px' }}>
                     {contextMenu.target ? (
@@ -657,7 +908,25 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
             )}
 
             {/* הקונטיינר עכשיו תופס את גודל המסך בדיוק */}
-            <div id="board-container" style={{ position: 'relative', width: '100%', height: '100%', background: boardBg, transition: '0.5s background' }}>
+            <div id="board-container" style={{
+    position: 'relative', width: '100%', height: '100%',
+    background: `radial-gradient(circle at 30% 30%, color-mix(in srgb, ${boardColor}, white 18%) 0%, ${boardColor} 100%)`,
+    transition: '0.5s background'
+}}>
+
+{boardPatternType !== 'none' && (
+    <div ref={patternBgRef} style={{ /* הוספנו כאן את ה-ref */
+        position: 'absolute', inset: 0, zIndex: 0, pointerEvents: 'none',
+        backgroundImage:
+            boardPatternType === 'grid'
+                ? `linear-gradient(rgba(${patternColorRGB}, 0.15) 1px, transparent 1px), linear-gradient(90deg, rgba(${patternColorRGB}, 0.15) 1px, transparent 1px)`
+            : boardPatternType === 'lines'
+                ? `linear-gradient(rgba(${patternColorRGB}, 0.15) 1px, transparent 1px)`
+            : `radial-gradient(circle, rgba(${patternColorRGB}, 0.45) 1.5px, transparent 1.5px)`,
+        backgroundSize: `${gridSize}px ${gridSize}px`,
+        backgroundPosition: '0px 0px', /* נקודת התחלה חיונית לחישוב */
+    }} />
+)}
                 <div style={{ position: 'absolute', top: 0, left: 0, zIndex: 1, width: '100%', height: '100%' }}>
                     <canvas id="fabric-canvas" ref={fabricCanvasElRef} />
                 </div>
