@@ -17,7 +17,7 @@ const getPatternContrastColor = (hexColor) => {
     return luminance > 140 ? '0, 0, 0' : '255, 255, 255';
 };
 
-const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize }, ref) => {
+const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize, projectId, initialData, onAutoSave, onBack }, ref) => {
     const fabricCanvasElRef = useRef(null);
     const drawingCanvasRef = useRef(null);
     const mathLayerRef = useRef(null);
@@ -25,8 +25,8 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize 
     const fCanvas = useRef(null);
     const patternBgRef = useRef(null);
 
-   const [boardColor, setBoardColor] = useState('#1e3d32');
-    const [boardPatternType, setBoardPatternType] = useState('grid');
+    const [boardColor, setBoardColor] = useState(initialData?.bg || '#1e3d32');
+    const [boardPatternType, setBoardPatternType] = useState(initialData?.pattern || 'grid');
     const [gridSize, setGridSize] = useState(40);
     const [showBoardSettings, setShowBoardSettings] = useState(false);
     const [boardSettingsPos, setBoardSettingsPos] = useState({ x: 0, y: 0 });
@@ -125,7 +125,7 @@ const syncCustomLayers = () => {
                 if (target && target.customType) enterNodeEditMode(target);
             });
 
-            fCanvas.current.on('selection:cleared', () => {
+      fCanvas.current.on('selection:cleared', () => {
                 if (s.isEnteringNodeEdit) return; 
                 exitNodeEditMode();
                 if (modeRef.current === 'select' && s.wasAutoSelected && s.editCircles.length === 0) {
@@ -133,7 +133,15 @@ const syncCustomLayers = () => {
                 }
             });
 
-            setTimeout(saveState, 200);
+            // טעינת מידע קיים - חובה לעטוף בטיימר כדי למנוע קריסה של Fabric
+            if (initialData && initialData.fabric) {
+                setTimeout(() => {
+                    s.isLocked = true;
+                    restore(initialData);
+                }, 50);
+            } else {
+                setTimeout(saveState, 200);
+            }
         };
 
         initCanvas();
@@ -441,6 +449,8 @@ const handleViewportPointerUp = (e) => {
         s.editingOriginalObj = newObj;
     };
 
+const autosaveTimerRef = useRef(null); // שמירת מזהה הטיימר
+
     const saveState = () => {
         if (!fCanvas.current || s.isLocked) return;
         const mathData = Array.from(mathLayerRef.current.children).map(wrapper => {
@@ -448,7 +458,18 @@ const handleViewportPointerUp = (e) => {
             return { left: wrapper.style.left, top: wrapper.style.top, value: mf ? mf.getValue() : '', size: mf ? mf.style.fontSize : '48px', color: mf ? mf.style.color : '#fff' };
         });
         const state = { fabric: fCanvas.current.toObject(['customType']), math: mathData };
-        s.historyStack.push(JSON.stringify(state)); if (s.historyStack.length > 25) s.historyStack.shift(); s.redoStack = []; 
+        
+        s.historyStack.push(JSON.stringify(state)); 
+        if (s.historyStack.length > 25) s.historyStack.shift(); 
+        s.redoStack = []; 
+
+        // מנגנון Debounce לשמירה אוטומטית מקומית (IndexedDB)
+        if (onAutoSave) {
+            if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+            autosaveTimerRef.current = setTimeout(() => {
+                onAutoSave({ fabric: state.fabric, math: state.math, bg: boardColor, pattern: boardPatternType });
+            }, 1500); // מחכה 1.5 שניות של חוסר פעילות לפני כתיבה למסד הנתונים
+        }
     };
 
     const undo = () => {
