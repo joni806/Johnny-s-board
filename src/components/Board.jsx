@@ -78,6 +78,7 @@ const s = useRef({
     longPressFired: false,   
     isSelectingEditCircle: false, 
     isSelectingShape: false, // ← התוספת שלנו למעקב אחרי גרירת הצורה כולה
+    forceBoundingBox: false, // ← התוספת החדשה שלנו!
 }).current;
 
 const syncCustomLayers = () => {
@@ -140,15 +141,42 @@ const syncCustomLayers = () => {
                 stopContextMenu: true, renderOnAddRemove: false 
             });
 
-        fCanvas.current.on('mouse:dblclick', (opt) => {
-                    const target = opt.target || fCanvas.current.findTarget(opt.e);
-                    // בא מהמסגרת הלבנה → נכנסים למצב עיגולים
-                    if (target && target.customType && s.editCircles.length === 0) {
+// --- כניסה אוטומטית לעיגולים הכחולים בלחיצה רגילה (בחירה) ---
+            fCanvas.current.on('selection:created', (opt) => {
+                if (s.isEnteringNodeEdit || s.forceBoundingBox) return;
+                const target = opt.selected[0];
+                if (target && isSmartShape(target)) {
+                    enterNodeEditMode(target);
+                }
+            });
+
+            fCanvas.current.on('selection:updated', (opt) => {
+                if (s.isEnteringNodeEdit || s.forceBoundingBox) return;
+                const target = opt.selected[0];
+                if (target && isSmartShape(target)) {
+                    enterNodeEditMode(target);
+                }
+            });
+
+            // --- לחיצה כפולה להחלפה בין עיגולים למסגרת לבנה ---
+            fCanvas.current.on('mouse:dblclick', (opt) => {
+                const target = opt.target || fCanvas.current.findTarget(opt.e);
+                if (target && isSmartShape(target)) {
+                    if (s.editCircles.length > 0 && s.editingOriginalObj === target) {
+                        // אם אנחנו בעיגולים כחולים -> עוברים למסגרת לבנה
+                        s.forceBoundingBox = true;
+                        exitNodeEditMode();
+                        fCanvas.current.setActiveObject(target);
+                        fCanvas.current.requestRenderAll();
+                        setTimeout(() => { s.forceBoundingBox = false; }, 200); // משחרר את החסימה מיד אחרי ההחלפה
+                    } else if (s.editCircles.length === 0) {
+                        // אם אנחנו במסגרת הלבנה -> חוזרים לעיגולים הכחולים
                         enterNodeEditMode(target);
                     }
-                });
+                }
+            });
 
-                // יציאה ממצב עיגולים → חזרה לציור בלחיצה בודדת על הלוח
+            // יציאה ממצב עיגולים → חזרה לציור בלחיצה בודדת על הלוח
             fCanvas.current.on('mouse:up', (opt) => {
                 if (!opt.target && s.editCircles.length > 0 && !s.longPressFired) {
                     clearTimeout(s.singleTapExitTimer);
@@ -158,14 +186,14 @@ const syncCustomLayers = () => {
                             setMode('draw');
                             s.wasAutoSelected = false;
                         }
-                    }, 250); // 250ms — מספיק לאתר לחיצה כפולה לפני שנצא
+                    }, 250);
                 }
-                s.longPressFired = false; // איפוס תמיד בסיום הרמת האצבע
+                s.longPressFired = false;
             });
 
-  fCanvas.current.on('selection:cleared', () => {
+            fCanvas.current.on('selection:cleared', () => {
                 if (s.isEnteringNodeEdit) return; 
-                if (s.isSelectingEditCircle || s.isSelectingShape) return; // ← הוספנו את המשתנה החדש כדי שלחיצה על הצורה לא תסגור את העריכה
+                if (s.isSelectingEditCircle || s.isSelectingShape) return; 
                 exitNodeEditMode();
                 if (modeRef.current === 'select' && s.wasAutoSelected && s.editCircles.length === 0) {
                     setMode('draw'); s.wasAutoSelected = false;
@@ -708,15 +736,23 @@ const handleViewportPointerUp = (e) => {
         s.isEnteringNodeEdit = false; 
     };
 
-    const updateNodeGeometry = (newObj) => {
-        const obj = s.editingOriginalObj; const index = fCanvas.current.getObjects().indexOf(obj);
+  const updateNodeGeometry = (newObj) => {
+        const obj = s.editingOriginalObj; 
         fCanvas.current.remove(obj); 
         
-        bindShapeEvents(newObj); // חיבור מחדש של אירועי הגרירה לצורה החדשה!
+        bindShapeEvents(newObj); // חיבור מחדש של אירועי הגרירה לצורה החדשה
         
         fCanvas.current.add(newObj);
-        if (index > -1 && typeof fCanvas.current.moveTo === 'function') fCanvas.current.moveTo(newObj, index);
-        else if (index > -1 && typeof newObj.moveTo === 'function') newObj.moveTo(index);
+        
+        // הפתרון לקפיצות: להבטיח שהעיגולים הכחולים תמיד נשארים השכבה העליונה ביותר!
+        // ברגע שהצורה החדשה נוצרה, נוודא שהיא לא מסתירה אותם וגונבת את הלחיצה.
+        s.editCircles.forEach(c => {
+            if (typeof c.bringToFront === 'function') c.bringToFront();
+            else if (typeof fCanvas.current.bringObjectToFront === 'function') fCanvas.current.bringObjectToFront(c);
+            
+            c.setCoords(); // קריטי: מעדכן את תיבת הלחיצה הבלתי נראית של העיגול כדי שהעכבר יזהה אותו
+        });
+        
         s.editingOriginalObj = newObj;
     };
 
@@ -820,6 +856,14 @@ const restore = (state) => {
         return { x: (-vpt[4] + window.innerWidth / 2) / zoom, y: (-vpt[5] + window.innerHeight / 2) / zoom };
     };
 
+    // ─── התוספת שלנו: פונקציה שמזהה למי מותר לקבל עיגולים כחולים ───
+    const isSmartShape = (obj) => {
+        if (!obj) return false;
+        if (obj.points) return true; // כל המצולעים והכוכבים תומכים בעריכת קודקודים
+        const smartTypes = ['rect', 'ellipse', 'curve', 'arrow', 'line'];
+        return smartTypes.includes(obj.customType);
+    };
+
     useImperativeHandle(ref, () => ({
         undo, redo, 
         clearBoard: () => { deactivateBox(false); exitNodeEditMode(); fCanvas.current.clear(); mathLayerRef.current.innerHTML = ''; saveState(); },
@@ -845,20 +889,25 @@ const restore = (state) => {
         addGrid: (cols, rows) => { const center = getCenterPos(); const grid = createGridGroup(cols, rows, drawColorRef.current); grid.set({ left: center.x, top: center.y, originX: 'center', originY: 'center' }); fCanvas.current.add(grid); fCanvas.current.setActiveObject(grid); setMode('select'); fCanvas.current.requestRenderAll(); saveState(); },
         addImage: (dataUrl) => { const imgEl = new Image(); imgEl.onload = () => { const center = getCenterPos(); const fabricImg = new fabric.Image(imgEl); fabricImg.scaleToWidth(400); fabricImg.set({ left: center.x, top: center.y, originX: 'center', originY: 'center' }); fCanvas.current.add(fabricImg); fCanvas.current.setActiveObject(fabricImg); setMode('select'); fCanvas.current.requestRenderAll(); saveState(); }; imgEl.src = dataUrl; },
     
-        addShape: (type) => { 
-                const center = getCenterPos(); 
-                const obj = createShape(type, drawColorRef.current, center, getStrokeWidth()); 
-                
-                if (obj) { 
-                    fCanvas.current.add(obj); 
-                    setMode('select'); 
-                    s.wasAutoSelected = true; 
-                    saveState(); 
+       addShape: (type) => { 
+            const center = getCenterPos(); 
+            const obj = createShape(type, drawColorRef.current, center, getStrokeWidth()); 
+            
+            if (obj) { 
+                fCanvas.current.add(obj); 
+                setMode('select'); 
+                s.wasAutoSelected = true; 
+                saveState(); 
 
-                    // מפעיל את העיגולים הכחולים לכל סוגי הצורות
+                // מבקש עיגולים כחולים רק אם הצורה תומכת בזה!
+                if (isSmartShape(obj)) {
                     enterNodeEditMode(obj);
-                } 
-            }
+                } else {
+                    fCanvas.current.setActiveObject(obj);
+                    fCanvas.current.requestRenderAll();
+                }
+            } 
+        }
     }));
 
     const deactivateBox = (shouldSave = true) => {
@@ -1167,16 +1216,15 @@ const restore = (state) => {
                 s.wasAutoSelected = true;
                 // ─────────────────────────────────────────
 
-                // הוספת הצורה החדשה מיד עם עיגולים כחולים (אם היא תומכת בזה)
-                const smartShapes = ['rect', 'triangle', 'ellipse', 'line', 'arrow', 'curve'];
-                if (cloned.customType && smartShapes.includes(cloned.customType)) {
+             // הוספת הצורה החדשה מיד עם עיגולים כחולים (רק אם היא תומכת בזה)
+                if (cloned.customType && isSmartShape(cloned)) {
                     enterNodeEditMode(cloned);
                 } else {
                     fCanvas.current.setActiveObject(cloned);
                 }
                 
                 fCanvas.current.requestRenderAll(); 
-                saveState(); 
+                saveState();
             };
             
             // תמיכה ב-Promises והעתקת ה-customType גם בזמן ההדבקה
