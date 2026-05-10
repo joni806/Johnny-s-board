@@ -80,9 +80,7 @@ function App() {
   if (currentProject) {
     return (
       <div style={{ width: '100vw', height: '100vh', overflow: 'hidden', position: 'relative' }}>
-        <button className="back-to-dash-btn" onClick={() => { setCurrentProject(null); loadProjectsList(); }}>
-          <span>➔</span> חזור ללוחות
-        </button>
+
 
         <Board 
           ref={boardRef} 
@@ -100,7 +98,8 @@ function App() {
           drawColor={drawColor} setDrawColor={setDrawColor} 
           textColor={textColor} setTextColor={setTextColor}
           globalFontSize={globalFontSize} setGlobalFontSize={setGlobalFontSize}
-          boardRef={boardRef} 
+          boardRef={boardRef}
+          onBack={() => { setCurrentProject(null); loadProjectsList(); }} 
         />
       </div>
     );

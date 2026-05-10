@@ -58,7 +58,14 @@ const s = useRef({
     longPressTimer: null,
     longPressStartX: 0,
     longPressStartY: 0,
-    }).current;
+    hasMovedEnoughToDraw: false, // ← הנה המשתנה החדש שהוספנו
+    lastTapTime: 0,
+    lastTapX: 0,
+    lastTapY: 0,
+    singleTapExitTimer: null, // ← הוספנו כאן
+    longPressFired: false,    // ← הוספנו כאן
+    isSelectingEditCircle: false, // ← הוסף שורה זו
+}).current;
 
 const syncCustomLayers = () => {
         if (!fCanvas.current) return;
@@ -120,13 +127,32 @@ const syncCustomLayers = () => {
                 stopContextMenu: true, renderOnAddRemove: false 
             });
 
-            fCanvas.current.on('mouse:dblclick', (opt) => {
-                const target = opt.target || fCanvas.current.findTarget(opt.e);
-                if (target && target.customType) enterNodeEditMode(target);
+        fCanvas.current.on('mouse:dblclick', (opt) => {
+                    const target = opt.target || fCanvas.current.findTarget(opt.e);
+                    // בא מהמסגרת הלבנה → נכנסים למצב עיגולים
+                    if (target && target.customType && s.editCircles.length === 0) {
+                        enterNodeEditMode(target);
+                    }
+                });
+
+                // יציאה ממצב עיגולים → חזרה לציור בלחיצה בודדת על הלוח
+            fCanvas.current.on('mouse:up', (opt) => {
+                if (!opt.target && s.editCircles.length > 0 && !s.longPressFired) {
+                    clearTimeout(s.singleTapExitTimer);
+                    s.singleTapExitTimer = setTimeout(() => {
+                        if (s.editCircles.length > 0) {
+                            exitNodeEditMode();
+                            setMode('draw');
+                            s.wasAutoSelected = false;
+                        }
+                    }, 250); // 250ms — מספיק לאתר לחיצה כפולה לפני שנצא
+                }
+                s.longPressFired = false; // איפוס תמיד בסיום הרמת האצבע
             });
 
-      fCanvas.current.on('selection:cleared', () => {
+    fCanvas.current.on('selection:cleared', () => {
                 if (s.isEnteringNodeEdit) return; 
+                if (s.isSelectingEditCircle) return; // ← הוסף את השורה הזו
                 exitNodeEditMode();
                 if (modeRef.current === 'select' && s.wasAutoSelected && s.editCircles.length === 0) {
                     setMode('draw'); s.wasAutoSelected = false;
@@ -243,15 +269,76 @@ window.removeEventListener('pointercancel', handleGlobalPointerGone);
  const handleViewportPointerDown = (e) => {
     s.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
-    // לחיצה ארוכה — רק אצבע אחת
+// לחיצה ארוכה — רק אצבע אחת
     if (s.activePointers.size === 1) {
+        // ← זיהוי לחיצה כפולה למעבר מעיגולים כחולים → מסגרת לבנה
+        const now = Date.now();
+        const timeSinceLastTap = now - s.lastTapTime;
+        const tapDist = Math.hypot(e.clientX - s.lastTapX, e.clientY - s.lastTapY);
+        s.lastTapTime = now;
+        s.lastTapX = e.clientX;
+        s.lastTapY = e.clientY;
+
+        if (timeSinceLastTap < 350 && tapDist < 40 && s.editCircles.length > 0) {
+            clearTimeout(s.singleTapExitTimer); // ← הוסף את השורה הזו
+            s.singleTapExitTimer = null;        // ← הוסף את השורה הזו
+            if (s.longPressTimer) { clearTimeout(s.longPressTimer); s.longPressTimer = null; }
+            const editedObj = s.editingOriginalObj;
+            exitNodeEditMode();
+            if (editedObj && fCanvas.current) {
+                fCanvas.current.setActiveObject(editedObj);
+                fCanvas.current.requestRenderAll();
+            }
+            return; // לא ממשיכים הלאה במידה וזיהינו לחיצה כפולה
+        }
+
         s.longPressStartX = e.clientX;
         s.longPressStartY = e.clientY;
-        s.longPressTimer = setTimeout(() => {
-            s.longPressTimer = null;
-            setBoardSettingsPos({ x: e.clientX, y: e.clientY });
-            setShowBoardSettings(true);
-        }, 500);
+        
+        // שומרים את המיקום בצד, כי React מנקה את האירוע אחרי ההשהיה
+        const cx = e.clientX;
+        const cy = e.clientY;
+
+     s.longPressTimer = setTimeout(() => {
+    s.longPressTimer = null;
+    s.longPressFired = true; // ← הוסף את השורה הזו כאן!
+    s.drawing = false;
+    s.points = [];
+    s.hasMovedEnoughToDraw = false;
+    clearTimeout(s.snapTimeout);
+    if (drawingCanvasRef.current) {
+        const ctx = drawingCanvasRef.current.getContext('2d');
+        ctx.clearRect(0, 0, drawingCanvasRef.current.width, drawingCanvasRef.current.height);
+    }
+
+    if (!fCanvas.current) return;
+
+    // ← חישוב ידני של קואורדינטות Fabric — בלי getPointer()
+    const zoom = fCanvas.current.getZoom();
+    const vpt = fCanvas.current.viewportTransform;
+    const fabricX = (cx - vpt[4]) / zoom;
+    const fabricY = (cy - vpt[5]) / zoom;
+    const fabricPoint = new fabric.Point(fabricX, fabricY);
+
+    // ← חיפוש צורה במיקום הלחיצה
+    let target = null;
+    const objects = fCanvas.current.getObjects();
+    for (let i = objects.length - 1; i >= 0; i--) {
+        if (objects[i].containsPoint(fabricPoint)) {
+            target = objects[i];
+            break;
+        }
+    }
+
+    if (target) {
+        setContextMenu({ visible: true, x: cx, y: cy, target });
+        setShowBoardSettings(false);
+    } else {
+        setBoardSettingsPos({ x: cx, y: cy });
+        setShowBoardSettings(true);
+        setContextMenu({ visible: false, x: 0, y: 0, target: null });
+    }
+}, 500);
     }
 
     if (s.activePointers.size >= 2 || e.shiftKey) {
@@ -285,10 +372,10 @@ window.removeEventListener('pointercancel', handleGlobalPointerGone);
 const handleViewportPointerMove = (e) => {
     if (s.activePointers.has(e.pointerId)) s.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
-    // ביטול לחיצה ארוכה אם האצבע זזה
+// ביטול לחיצה ארוכה אם האצבע זזה
     if (s.longPressTimer) {
         const moved = Math.hypot(e.clientX - s.longPressStartX, e.clientY - s.longPressStartY);
-        if (moved > 8) { clearTimeout(s.longPressTimer); s.longPressTimer = null; }
+        if (moved > 15) { clearTimeout(s.longPressTimer); s.longPressTimer = null; }
     }
 
     // פינץ' + פאן — שתי אצבעות
@@ -369,29 +456,60 @@ const handleViewportPointerUp = (e) => {
     };
 
 
-    const triggerContextMenu = (clientX, clientY) => {
+ const handleContextMenuAction = (clientX, clientY) => {
         if (!fCanvas.current) return;
         const pointer = fCanvas.current.getPointer({ clientX, clientY });
         let target = null;
         const objects = fCanvas.current.getObjects();
         for (let i = objects.length - 1; i >= 0; i--) { if (objects[i].containsPoint(pointer)) { target = objects[i]; break; } }
-        setContextMenu({ visible: true, x: clientX, y: clientY, target: target });
+        
+        if (target) {
+            // לחיצה על צורה
+            setContextMenu({ visible: true, x: clientX, y: clientY, target: target });
+            setShowBoardSettings(false);
+        } else if (s.clipboard) {
+            // לחיצה על הלוח ויש משהו מועתק
+            setContextMenu({ visible: true, x: clientX, y: clientY, target: null });
+            setShowBoardSettings(false);
+        } else {
+            // לחיצה על הלוח כשהכל ריק
+            setShowBoardSettings(true);
+            setBoardSettingsPos({ x: clientX, y: clientY });
+            setContextMenu({ visible: false, x: 0, y: 0, target: null });
+        }
     };
 
-    const handleNativeContextMenu = (e) => { e.preventDefault(); triggerContextMenu(e.clientX, e.clientY); };
+    const handleNativeContextMenu = (e) => { e.preventDefault(); handleContextMenuAction(e.clientX, e.clientY); };
     const getStrokeWidth = () => fCanvas.current ? 3 / fCanvas.current.getZoom() : 3;
 
     const buildLine = (p1, p2, color) => { let l = new fabric.Line([p1.x, p1.y, p2.x, p2.y], { stroke: color, strokeWidth: getStrokeWidth(), strokeLineCap: 'round', selectable: true, hasControls: true }); l.customType = 'line'; return l; };
     const buildArrow = (start, end, color) => { let angle = Math.atan2(end.y - start.y, end.x - start.x); let headlen = 20; const pathData = `M ${start.x} ${start.y} L ${end.x} ${end.y} L ${end.x - headlen * Math.cos(angle - Math.PI / 6)} ${end.y - headlen * Math.sin(angle - Math.PI / 6)} M ${end.x} ${end.y} L ${end.x - headlen * Math.cos(angle + Math.PI / 6)} ${end.y - headlen * Math.sin(angle + Math.PI / 6)}`; let p = new fabric.Path(pathData, { fill: 'transparent', stroke: color, strokeWidth: getStrokeWidth(), strokeLineCap: 'round', strokeLineJoin: 'round', selectable: true }); p.customType = 'arrow'; return p; };
     const buildCurve = (start, cp, end, color) => { const pathData = `M ${start.x} ${start.y} Q ${cp.x} ${cp.y} ${end.x} ${end.y}`; let p = new fabric.Path(pathData, { fill: 'transparent', stroke: color, strokeWidth: getStrokeWidth(), strokeLineCap: 'round', selectable: true }); p.customType = 'curve'; return p; };
 
+    const handleDeleteTarget = () => {
+    if (contextMenu.target) {
+        // שומרים את האובייקט לפני ש-exitNodeEditMode מאפס אותו
+        const objToDelete = s.editingOriginalObj || contextMenu.target;
+        exitNodeEditMode(); // ← מסיר עיגולים כחולים
+        fCanvas.current.remove(objToDelete);
+        fCanvas.current.remove(contextMenu.target); // גם אם הוחלף — בטוח להריץ
+        fCanvas.current.discardActiveObject();
+        fCanvas.current.requestRenderAll();
+        saveState();
+        setContextMenu(prev => ({...prev, visible: false}));
+    }
+};
     const exitNodeEditMode = () => {
-        if (s.editCircles.length > 0) {
-            s.editCircles.forEach(c => fCanvas.current.remove(c)); s.editCircles = [];
-            if (s.editingOriginalObj) { s.editingOriginalObj.set({ opacity: 1, selectable: true, evented: true, hasControls: true }); fCanvas.current.setActiveObject(s.editingOriginalObj); s.editingOriginalObj = null; }
-            fCanvas.current.requestRenderAll();
-        }
-    };
+            if (s.editCircles.length > 0) {
+                s.editCircles.forEach(c => fCanvas.current.remove(c)); s.editCircles = [];
+                if (s.editingOriginalObj) { 
+                    s.editingOriginalObj.set({ opacity: 1, selectable: true, evented: true, hasControls: true }); 
+                    fCanvas.current.discardActiveObject(); // ← זה השינוי
+                    s.editingOriginalObj = null; 
+                }
+                fCanvas.current.requestRenderAll();
+            }
+        };
 
     const enterNodeEditMode = (obj) => {
         s.isEnteringNodeEdit = true; exitNodeEditMode(); s.editingOriginalObj = obj;
@@ -400,43 +518,93 @@ const handleViewportPointerUp = (e) => {
         const getAbs = (p) => fabric.util.transformPoint({ x: p.x - (obj.pathOffset ? obj.pathOffset.x : 0), y: p.y - (obj.pathOffset ? obj.pathOffset.y : 0) }, m);
 
         const makeNode = (x, y, onDrag) => {
-            const circle = new fabric.Circle({ left: x, top: y, originX: 'center', originY: 'center', radius: 10, fill: '#3b82f6', stroke: '#ffffff', strokeWidth: 2, hasControls: false, hasBorders: false, selectable: true });
-            circle.on('moving', () => { onDrag(circle); fCanvas.current.requestRenderAll(); });
-            circle.on('modified', () => { saveState(); }); fCanvas.current.add(circle); s.editCircles.push(circle); return circle;
-        };
-
+                    const circle = new fabric.Circle({ left: x, top: y, originX: 'center', originY: 'center', radius: 10, fill: '#3b82f6', stroke: '#ffffff', strokeWidth: 2, hasControls: false, hasBorders: false, selectable: true });
+                    
+                    // ← הוסף את שתי השורות האלו כדי להדליק/לכבות את הדגל
+                    circle.on('mousedown', () => { s.isSelectingEditCircle = true; });
+                    circle.on('mouseup', () => { s.isSelectingEditCircle = false; });
+                    
+                    circle.on('moving', () => { onDrag(circle); fCanvas.current.requestRenderAll(); });
+                    circle.on('modified', () => { saveState(); }); fCanvas.current.add(circle); s.editCircles.push(circle); return circle;
+                };
+            
         if (obj.customType === 'triangle' && obj.points) {
             const p0 = getAbs(obj.points[0]); const p1 = getAbs(obj.points[1]); const p2 = getAbs(obj.points[2]);
             const topN = makeNode(p0.x, p0.y, (c) => updateNodeGeometry(new fabric.Polygon([{x: c.left, y: c.top}, {x: brN.left, y: brN.top}, {x: blN.left, y: blN.top}], { fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'triangle' })));
             const brN = makeNode(p1.x, p1.y, (c) => updateNodeGeometry(new fabric.Polygon([{x: topN.left, y: topN.top}, {x: c.left, y: c.top}, {x: blN.left, y: blN.top}], { fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'triangle' })));
             const blN = makeNode(p2.x, p2.y, (c) => updateNodeGeometry(new fabric.Polygon([{x: topN.left, y: topN.top}, {x: brN.left, y: brN.top}, {x: c.left, y: c.top}], { fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'triangle' })));
-        } else if (obj.customType === 'rect') {
-            const tl = obj.getPointByOrigin('left', 'top'); const br = obj.getPointByOrigin('right', 'bottom');
+       
+            } else if (obj.customType === 'rect') {
+            const tl = obj.getPointByOrigin('left', 'top');
+            const br = obj.getPointByOrigin('right', 'bottom');
+
             const tlN = makeNode(tl.x, tl.y, (c) => {
-                let newL = Math.min(c.left, brN.left); let newT = Math.min(c.top, brN.top); let newW = Math.abs(brN.left - c.left); let newH = Math.abs(brN.top - c.top);
-                updateNodeGeometry(new fabric.Rect({ originX: 'left', originY: 'top', left: newL, top: newT, width: newW, height: newH, fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'rect' }));
+                const nL = Math.min(c.left, brN.left), nT = Math.min(c.top, brN.top);
+                trN.set({ left: Math.max(c.left, brN.left), top: Math.min(c.top, brN.top) }); trN.setCoords(); // ← הוסף setCoords
+                blN.set({ left: Math.min(c.left, brN.left), top: Math.max(c.top, brN.top) }); blN.setCoords(); // ← הוסף setCoords
+                updateNodeGeometry(new fabric.Rect({ originX: 'left', originY: 'top', left: nL, top: nT, width: Math.abs(brN.left - c.left), height: Math.abs(brN.top - c.top), fill: 'rgba(255,255,255,0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'rect' }));
+            });
+            const trN = makeNode(br.x, tl.y, (c) => {
+                const nL = Math.min(blN.left, c.left), nT = Math.min(c.top, blN.top);
+                tlN.set({ left: Math.min(c.left, blN.left), top: Math.min(c.top, blN.top) }); tlN.setCoords(); // ← הוסף setCoords
+                brN.set({ left: Math.max(c.left, blN.left), top: Math.max(c.top, blN.top) }); brN.setCoords(); // ← הוסף setCoords
+                updateNodeGeometry(new fabric.Rect({ originX: 'left', originY: 'top', left: nL, top: nT, width: Math.abs(c.left - blN.left), height: Math.abs(blN.top - c.top), fill: 'rgba(255,255,255,0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'rect' }));
             });
             const brN = makeNode(br.x, br.y, (c) => {
-                let newL = Math.min(tlN.left, c.left); let newT = Math.min(tlN.top, c.top); let newW = Math.abs(c.left - tlN.left); let newH = Math.abs(c.top - tlN.top);
-                updateNodeGeometry(new fabric.Rect({ originX: 'left', originY: 'top', left: newL, top: newT, width: newW, height: newH, fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'rect' }));
+                const nL = Math.min(tlN.left, c.left), nT = Math.min(tlN.top, c.top);
+                trN.set({ left: Math.max(c.left, tlN.left), top: Math.min(c.top, tlN.top) }); trN.setCoords(); // ← הוסף setCoords
+                blN.set({ left: Math.min(c.left, tlN.left), top: Math.max(c.top, tlN.top) }); blN.setCoords(); // ← הוסף setCoords
+                updateNodeGeometry(new fabric.Rect({ originX: 'left', originY: 'top', left: nL, top: nT, width: Math.abs(c.left - tlN.left), height: Math.abs(c.top - tlN.top), fill: 'rgba(255,255,255,0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'rect' }));
             });
-        } else if (obj.customType === 'curve' && obj.path) {
-            const pStart = getAbs({x: obj.path[0][1], y: obj.path[0][2]}); const pCp = getAbs({x: obj.path[1][1], y: obj.path[1][2]}); const pEnd = getAbs({x: obj.path[1][3], y: obj.path[1][4]});
-            const sN = makeNode(pStart.x, pStart.y, (c) => updateNodeGeometry(buildCurve({x: c.left, y: c.top}, {x: cpN.left, y: cpN.top}, {x: eN.left, y: eN.top}, color)));
-            const cpN = makeNode(pCp.x, pCp.y, (c) => updateNodeGeometry(buildCurve({x: sN.left, y: sN.top}, {x: c.left, y: c.top}, {x: eN.left, y: eN.top}, color)));
-            const eN = makeNode(pEnd.x, pEnd.y, (c) => updateNodeGeometry(buildCurve({x: sN.left, y: sN.top}, {x: cpN.left, y: cpN.top}, {x: c.left, y: c.top}, color)));
-        } else if (obj.customType === 'arrow' && obj.path) {
-            const pStart = getAbs({x: obj.path[0][1], y: obj.path[0][2]}); const pEnd = getAbs({x: obj.path[1][1], y: obj.path[1][2]});
-            const sN = makeNode(pStart.x, pStart.y, (c) => updateNodeGeometry(buildArrow({x: c.left, y: c.top}, {x: eN.left, y: eN.top}, color)));
-            const eN = makeNode(pEnd.x, pEnd.y, (c) => updateNodeGeometry(buildArrow({x: sN.left, y: sN.top}, {x: c.left, y: c.top}, color)));
-        } else if (obj.customType === 'line') {
-            const pts = obj.calcLinePoints(); const p1 = fabric.util.transformPoint({ x: pts.x1, y: pts.y1 }, m); const p2 = fabric.util.transformPoint({ x: pts.x2, y: pts.y2 }, m);
-            const sN = makeNode(p1.x, p1.y, (c) => updateNodeGeometry(buildLine({x: c.left, y: c.top}, {x: eN.left, y: eN.top}, color)));
-            const eN = makeNode(p2.x, p2.y, (c) => updateNodeGeometry(buildLine({x: sN.left, y: sN.top}, {x: c.left, y: c.top}, color)));
-        } else if (obj.customType === 'ellipse') {
-            const center = obj.getPointByOrigin('center', 'center'); const rx = obj.rx * obj.scaleX; const ry = obj.ry * obj.scaleY;
-            const rN = makeNode(center.x + rx, center.y, (c) => updateNodeGeometry(new fabric.Ellipse({ originX: 'center', originY: 'center', left: center.x, top: center.y, rx: Math.max(1, Math.abs(c.left - center.x)), ry: Math.max(1, Math.abs(bN.top - center.y)), fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'ellipse' })));
-            const bN = makeNode(center.x, center.y + ry, (c) => updateNodeGeometry(new fabric.Ellipse({ originX: 'center', originY: 'center', left: center.x, top: center.y, rx: Math.max(1, Math.abs(rN.left - center.x)), ry: Math.max(1, Math.abs(c.top - center.y)), fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'ellipse' })));
+            const blN = makeNode(tl.x, br.y, (c) => {
+                const nL = Math.min(c.left, trN.left), nT = Math.min(trN.top, c.top);
+                tlN.set({ left: Math.min(c.left, trN.left), top: Math.min(c.top, trN.top) }); tlN.setCoords(); // ← הוסף setCoords
+                brN.set({ left: Math.max(c.left, trN.left), top: Math.max(c.top, trN.top) }); brN.setCoords(); // ← הוסף setCoords
+                updateNodeGeometry(new fabric.Rect({ originX: 'left', originY: 'top', left: nL, top: nT, width: Math.abs(trN.left - c.left), height: Math.abs(c.top - trN.top), fill: 'rgba(255,255,255,0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'rect' }));
+            });
+            
+            } else if (obj.customType === 'curve' && obj.path) {
+                const pStart = getAbs({x: obj.path[0][1], y: obj.path[0][2]}); const pCp = getAbs({x: obj.path[1][1], y: obj.path[1][2]}); const pEnd = getAbs({x: obj.path[1][3], y: obj.path[1][4]});
+                const sN = makeNode(pStart.x, pStart.y, (c) => updateNodeGeometry(buildCurve({x: c.left, y: c.top}, {x: cpN.left, y: cpN.top}, {x: eN.left, y: eN.top}, color)));
+                const cpN = makeNode(pCp.x, pCp.y, (c) => updateNodeGeometry(buildCurve({x: sN.left, y: sN.top}, {x: c.left, y: c.top}, {x: eN.left, y: eN.top}, color)));
+                const eN = makeNode(pEnd.x, pEnd.y, (c) => updateNodeGeometry(buildCurve({x: sN.left, y: sN.top}, {x: cpN.left, y: cpN.top}, {x: c.left, y: c.top}, color)));
+        
+        
+            } else if (obj.customType === 'arrow' && obj.path) {
+                const pStart = getAbs({x: obj.path[0][1], y: obj.path[0][2]}); const pEnd = getAbs({x: obj.path[1][1], y: obj.path[1][2]});
+                const sN = makeNode(pStart.x, pStart.y, (c) => updateNodeGeometry(buildArrow({x: c.left, y: c.top}, {x: eN.left, y: eN.top}, color)));
+                const eN = makeNode(pEnd.x, pEnd.y, (c) => updateNodeGeometry(buildArrow({x: sN.left, y: sN.top}, {x: c.left, y: c.top}, color)));
+        
+            } else if (obj.customType === 'line') {
+                const pts = obj.calcLinePoints(); const p1 = fabric.util.transformPoint({ x: pts.x1, y: pts.y1 }, m); const p2 = fabric.util.transformPoint({ x: pts.x2, y: pts.y2 }, m);
+                const sN = makeNode(p1.x, p1.y, (c) => updateNodeGeometry(buildLine({x: c.left, y: c.top}, {x: eN.left, y: eN.top}, color)));
+                const eN = makeNode(p2.x, p2.y, (c) => updateNodeGeometry(buildLine({x: sN.left, y: sN.top}, {x: c.left, y: c.top}, color)));
+        
+         } else if (obj.customType === 'ellipse') {
+            const center = obj.getPointByOrigin('center', 'center');
+            const rx = obj.rx * obj.scaleX;
+            const ry = obj.ry * obj.scaleY;
+
+            const rN = makeNode(center.x + rx, center.y, (c) => {
+                const newRx = Math.max(1, Math.abs(c.left - center.x));
+                lN.set({ left: center.x - newRx, top: center.y }); lN.setCoords(); // ← הוסף
+                updateNodeGeometry(new fabric.Ellipse({ originX: 'center', originY: 'center', left: center.x, top: center.y, rx: newRx, ry: Math.max(1, Math.abs(bN.top - center.y)), fill: 'rgba(255,255,255,0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'ellipse' }));
+            });
+            const lN = makeNode(center.x - rx, center.y, (c) => {
+                const newRx = Math.max(1, Math.abs(c.left - center.x));
+                rN.set({ left: center.x + newRx, top: center.y }); rN.setCoords(); // ← הוסף
+                updateNodeGeometry(new fabric.Ellipse({ originX: 'center', originY: 'center', left: center.x, top: center.y, rx: newRx, ry: Math.max(1, Math.abs(bN.top - center.y)), fill: 'rgba(255,255,255,0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'ellipse' }));
+            });
+            const bN = makeNode(center.x, center.y + ry, (c) => {
+                const newRy = Math.max(1, Math.abs(c.top - center.y));
+                tN.set({ left: center.x, top: center.y - newRy }); tN.setCoords(); // ← הוסף
+                updateNodeGeometry(new fabric.Ellipse({ originX: 'center', originY: 'center', left: center.x, top: center.y, rx: Math.max(1, Math.abs(rN.left - center.x)), ry: newRy, fill: 'rgba(255,255,255,0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'ellipse' }));
+            });
+            const tN = makeNode(center.x, center.y - ry, (c) => {
+                const newRy = Math.max(1, Math.abs(c.top - center.y));
+                bN.set({ left: center.x, top: center.y + newRy }); bN.setCoords(); // ← הוסף
+                updateNodeGeometry(new fabric.Ellipse({ originX: 'center', originY: 'center', left: center.x, top: center.y, rx: Math.max(1, Math.abs(rN.left - center.x)), ry: newRy, fill: 'rgba(255,255,255,0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'ellipse' }));
+            });
         }
         fCanvas.current.requestRenderAll(); s.isEnteringNodeEdit = false; 
     };
@@ -620,8 +788,13 @@ const restore = (state) => {
         if (modeRef.current === 'text') { 
             const wrapper = createMathFieldDOM(virtualX + 'px', (virtualY - 30) + 'px', '', globalFontSize + 'px', textColorRef.current);
             mathLayerRef.current.appendChild(wrapper); wrapper.querySelector('math-field').focus();
+       
         } else if (modeRef.current === 'draw' || modeRef.current === 'erase') {
-            s.drawing = true; s.hasSnapped = false; s.points = [coords]; s.liveObj = null;
+            s.drawing = true; 
+            s.hasSnapped = false; 
+            s.hasMovedEnoughToDraw = false; // ← איפוס המשתנה לפני שמתחילים לצייר
+            s.points = [coords]; 
+            s.liveObj = null;
             const ctx = drawingCanvasRef.current.getContext('2d'); 
             ctx.lineCap = 'round'; ctx.lineJoin = 'round'; 
             
@@ -639,6 +812,12 @@ const restore = (state) => {
 
  const handlePointerMove = (e) => {
         if (s.isPanning || !s.drawing || s.activePointers.size >= 2) return;
+            // ← הוסף: אל תתחיל ציור עד שזזת לפחות 5px (מונע התנגשות עם long press)
+    if (s.drawing && !s.hasMovedEnoughToDraw) {
+        const moved = Math.hypot(e.clientX - s.longPressStartX, e.clientY - s.longPressStartY);
+        if (moved < 5) return;
+        s.hasMovedEnoughToDraw = true;
+    }
         
         // שימוש באותה פונקציה אחידה בדיוק כמו בלחיצה!
         const { screenX, screenY, virtualX, virtualY } = getCanvasCoords(e.clientX, e.clientY);
@@ -719,7 +898,13 @@ const restore = (state) => {
         }
 
         if (s.isPanning) return; 
-        if (s.liveObj) { fCanvas.current.setActiveObject(s.liveObj); setMode('select'); s.wasAutoSelected = true; saveState(); s.liveObj = null;
+        if (s.liveObj) {
+            const obj = s.liveObj;
+            s.liveObj = null;
+            setMode('select');
+            s.wasAutoSelected = true;
+            saveState();
+            enterNodeEditMode(obj); // פותח עיגולים במקום מסגרת לבנה
         } else if (s.drawing && !s.hasSnapped && modeRef.current === 'draw') convertToScribble();
         if (modeRef.current === 'erase') saveState();
         s.drawing = false; s.points = []; clearTimeout(s.snapTimeout);
@@ -755,10 +940,20 @@ const restore = (state) => {
             if (maxPerpDist > Math.max(50, endDist * 0.25) && endDist > 50) { let cpX = 2 * extremePoint.x - 0.5 * start.x - 0.5 * end.x; let cpY = 2 * extremePoint.y - 0.5 * start.y - 0.5 * end.y; objToAdd = buildCurve(start, {x: cpX, y: cpY}, end, drawColorRef.current); objType = 'curve'; objProps = { start: start, extremePoint: extremePoint }; }
         }
 
-        if (objToAdd) { 
+      if (objToAdd) { 
             s.hasSnapped = true; const liveTypes = ['line', 'arrow', 'curve', 'ellipse', 'rect', 'triangle'];
-            if (s.drawing && objType && liveTypes.includes(objType)) { s.liveObj = objToAdd; s.liveObjType = objType; s.liveObjProps = objProps; fCanvas.current.add(s.liveObj); } else { fCanvas.current.add(objToAdd); fCanvas.current.setActiveObject(objToAdd); setMode('select'); s.wasAutoSelected = true; saveState(); }
-            drawingCanvasRef.current.getContext('2d').clearRect(0, 0, window.innerWidth, window.innerHeight); fCanvas.current.requestRenderAll(); s.points = []; 
+            if (s.drawing && objType && liveTypes.includes(objType)) { 
+                s.liveObj = objToAdd; s.liveObjType = objType; s.liveObjProps = objProps; fCanvas.current.add(s.liveObj); 
+            } else { 
+                fCanvas.current.add(objToAdd); 
+                setMode('select'); 
+                s.wasAutoSelected = true; 
+                saveState(); 
+                enterNodeEditMode(objToAdd); // פותח עיגולים במקום מסגרת לבנה
+            }
+            drawingCanvasRef.current.getContext('2d').clearRect(0, 0, window.innerWidth, window.innerHeight); 
+            fCanvas.current.requestRenderAll(); 
+            s.points = []; 
         }
     };
 
@@ -768,12 +963,26 @@ const restore = (state) => {
     const handlePaste = () => { if (s.clipboard) { s.clipboard.clone((cloned) => { fCanvas.current.discardActiveObject(); cloned.set({ left: cloned.left + 20, top: cloned.top + 20, evented: true }); fCanvas.current.add(cloned); s.clipboard.top += 20; s.clipboard.left += 20; fCanvas.current.setActiveObject(cloned); fCanvas.current.requestRenderAll(); saveState(); }); } setContextMenu(prev => ({...prev, visible: false})); };
 
     const patternColorRGB = getPatternContrastColor(boardColor);
+    const handleViewportPointerCancel = (e) => {
+    // שים לב: לא מנקים את s.longPressTimer כאן!
+    // pointercancel מגיע לפני שהטיימר יורה — אם ננקה אותו, long press לא יעבוד לעולם
+    s.activePointers.delete(e.pointerId);
+    if (s.activePointers.size === 0) {
+        s.isPanning = false;
+        s.multiTouchStartTime = null;
+        s.multiTouchMoved = false;
+        s.multiTouchMaxFingers = 0;
+        s.multiTouchInitialPositions = new Map();
+        s.activePointers.clear();
+        if (fCanvas.current) fCanvas.current.selection = true;
+    }
+};
     return (
         <div id="viewport" dir="ltr" ref={viewportRef} onContextMenu={handleNativeContextMenu} 
             onPointerDownCapture={handleViewportPointerDown}
             onPointerMoveCapture={handleViewportPointerMove}
             onPointerUpCapture={handleViewportPointerUp}
-            onPointerCancelCapture={handleViewportPointerUp}
+            onPointerCancelCapture={handleViewportPointerCancel}
             style={{ 
                 width: '100vw', height: '100vh', overflow: 'hidden', 
                 position: 'relative', cursor: s.isPanning ? 'grabbing' : 'default',
@@ -806,8 +1015,8 @@ const restore = (state) => {
             
             {showBoardSettings && (
     <>
-        <div style={{ position: 'fixed', inset: 0, zIndex: 10000 }}
-             onClick={() => setShowBoardSettings(false)} />
+       <div style={{ position: 'fixed', inset: 0, zIndex: 10000 }}
+             onPointerDown={(e) => { e.stopPropagation(); setShowBoardSettings(false); }} />
         <div dir="rtl" style={{
             position: 'fixed',
             top: Math.min(boardSettingsPos.y, window.innerHeight - 420),
@@ -896,7 +1105,7 @@ const restore = (state) => {
     </>
 )}
 
-            {contextMenu.visible && (
+{contextMenu.visible && (
                 <div className="context-menu" dir="rtl" style={{ position: 'fixed', top: contextMenu.y, left: contextMenu.x, zIndex: 10000, background: 'rgba(28, 28, 30, 0.95)', backdropFilter: 'blur(20px)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px', padding: '12px', boxShadow: '0 10px 30px rgba(0,0,0,0.5)', color: 'white', display: 'flex', flexDirection: 'column', gap: '10px', minWidth: '150px' }}>
                     {contextMenu.target ? (
                         <>
@@ -911,18 +1120,20 @@ const restore = (state) => {
                                     <button onClick={() => handleThicknessChange(1)} className="cm-btn" style={{padding: '2px 8px'}}>+</button>
                                 </div>
                             </div>
-                            <button onClick={handleCopy} className="cm-btn">העתק</button>
+                            <div style={{display: 'flex', gap: '8px'}}>
+                                <button onClick={handleCopy} className="cm-btn" style={{flex: 1}}>העתק</button>
+                                <button onClick={handleDeleteTarget} className="cm-btn" style={{flex: 1, color: '#ef4444', backgroundColor: 'rgba(239, 68, 68, 0.1)'}}>מחק</button>
+                            </div>
                         </>
                     ) : (
                         <>
-                            <div style={{fontSize: '12px', color: '#aaa', fontWeight: 'bold'}}>אפשרויות לוח</div>
-                            <button onClick={handlePaste} className="cm-btn" disabled={!s.clipboard} style={{opacity: s.clipboard ? 1 : 0.5}}>הדבק</button>
-                            <div style={{fontSize: '12px', color: '#aaa', marginTop: '4px', fontWeight: 'bold'}}>צבע רקע:</div>
-                            <div style={{display: 'flex', gap: '6px', justifyContent: 'center'}}>
-                                <button onClick={() => setBoardBg('radial-gradient(circle, #2a5244 0%, #1e3d32 100%)')} style={{background: '#2a5244', width: '24px', height: '24px', borderRadius: '6px', border: '1px solid #fff', cursor: 'pointer'}}/>
-                                <button onClick={() => setBoardBg('#1e1e1e')} style={{background: '#1e1e1e', width: '24px', height: '24px', borderRadius: '6px', border: '1px solid #fff', cursor: 'pointer'}}/>
-                                <button onClick={() => setBoardBg('#0f172a')} style={{background: '#0f172a', width: '24px', height: '24px', borderRadius: '6px', border: '1px solid #fff', cursor: 'pointer'}}/>
-                            </div>
+                            <div style={{fontSize: '12px', color: '#aaa', fontWeight: 'bold'}}>פעולות לוח</div>
+                            <button onClick={handlePaste} className="cm-btn">הדבק צורה</button>
+                            <button onClick={() => {
+                                setContextMenu(prev => ({...prev, visible: false}));
+                                setBoardSettingsPos({ x: contextMenu.x, y: contextMenu.y });
+                                setShowBoardSettings(true);
+                            }} className="cm-btn" style={{marginTop: '4px'}}>הגדרות לוח (צבע/רשת)</button>
                         </>
                     )}
                 </div>

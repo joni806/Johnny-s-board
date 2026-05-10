@@ -1,21 +1,21 @@
 import React, { useState, useRef, useEffect } from 'react';
 
-// מנוע האייקונים הנקי שלנו
-const Icon = ({ name }) => {
-    const props = { width: 20, height: 20, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round" };
+const Icon = ({ name, size = 20 }) => {
+    const props = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round" };
     switch (name) {
         case 'draw': return <svg {...props}><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/></svg>;
         case 'erase': return <svg {...props}><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>;
         case 'text': return <svg {...props}><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>;
         case 'select': return <svg {...props}><path d="m3 3 7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/><path d="m13 13 6 6"/></svg>;
-        case 'ans': return <svg {...props}><path d="M4 14l6-6 4 4 6-6"/><path d="M14 6h6v6"/><path d="M4 20h16"/></svg>; // האייקון החדש לפתרון משוואות!
+        case 'ans': return <svg {...props}><path d="M4 14l6-6 4 4 6-6"/><path d="M14 6h6v6"/><path d="M4 20h16"/></svg>;
         case 'add': return <svg {...props}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>;
         case 'clear': return <svg {...props}><path d="M3 6h18M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>;
         case 'image': return <svg {...props}><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>;
         case 'grid': return <svg {...props}><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>;
         case 'desmos': return <svg {...props} viewBox="0 0 24 24"><path d="M4 4h16v16H4z M4 12h16 M12 4v16 M6 10l2-2l2 2 M18 10l-2-2l-2 2"/></svg>;
-        
-        // צורות מתמטיות להוספה
+        case 'home': return <svg {...props}><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>;
+        case 'undo': return <svg {...props}><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>;
+        case 'redo': return <svg {...props}><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"/></svg>;
         case 'rect': return <svg {...props}><rect x="4" y="4" width="16" height="16" rx="2"/></svg>;
         case 'circle': return <svg {...props}><circle cx="12" cy="12" r="8"/></svg>;
         case 'ellipse': return <svg {...props}><ellipse cx="12" cy="12" rx="10" ry="6"/></svg>;
@@ -51,15 +51,16 @@ const Icon = ({ name }) => {
     }
 };
 
-export default function Toolbar({ mode, setMode, drawColor, setDrawColor, textColor, setTextColor, globalFontSize, setGlobalFontSize, boardRef }) {
+export default function Toolbar({ mode, setMode, drawColor, setDrawColor, textColor, setTextColor, globalFontSize, setGlobalFontSize, boardRef, onBack }) {
     const colors = ['#f5f5f5', '#fde047', '#4ade80', '#22d3ee', '#f472b6'];
     const [showAddMenu, setShowAddMenu] = useState(false);
     const [showDesmos, setShowDesmos] = useState(false);
     const menuRef = useRef(null);
     const fileInputRef = useRef(null);
-    
+
     const act = (fn, ...args) => boardRef.current && boardRef.current[fn](...args);
 
+    // ─── Desmos init ──────────────────────────────────────────────────────────
     useEffect(() => {
         let calcInstance = null;
         if (showDesmos) {
@@ -69,11 +70,14 @@ export default function Toolbar({ mode, setMode, drawColor, setDrawColor, textCo
                     calcInstance = window.Desmos.GraphingCalculator(elt, {
                         expressions: true,
                         keypad: true,
-                        settingsMenu: true
+                        settingsMenu: true,
+                        // Force LTR inside Desmos
+                        language: 'he',
                     });
+                    // Ensure the element itself is LTR after Desmos injects its DOM
+                    elt.setAttribute('dir', 'ltr');
                 }
             };
-
             if (!document.getElementById('desmos-api-script')) {
                 const script = document.createElement('script');
                 script.id = 'desmos-api-script';
@@ -85,11 +89,10 @@ export default function Toolbar({ mode, setMode, drawColor, setDrawColor, textCo
                 setTimeout(initDesmos, 50);
             }
         }
-        return () => {
-            if (calcInstance) calcInstance.destroy();
-        };
+        return () => { if (calcInstance) calcInstance.destroy(); };
     }, [showDesmos]);
 
+    // ─── Close add-menu on outside click ─────────────────────────────────────
     useEffect(() => {
         const handleClickOutside = (e) => {
             if (menuRef.current && !menuRef.current.contains(e.target)) setShowAddMenu(false);
@@ -128,82 +131,216 @@ export default function Toolbar({ mode, setMode, drawColor, setDrawColor, textCo
         { title: 'מתמטיקה ותרשימים', shapes: ['math-plus', 'math-minus', 'math-multiply', 'cylinder', 'cube', 'heart', 'lightning', 'moon', 'cloud', 'speech-bubble'] }
     ];
 
+    // ─── Shared glass-panel style ─────────────────────────────────────────────
+    const glassPanel = {
+        background: 'rgba(28, 28, 30, 0.88)',
+        backdropFilter: 'blur(20px)',
+        WebkitBackdropFilter: 'blur(20px)',
+        border: '1px solid rgba(255, 255, 255, 0.09)',
+        borderRadius: '14px',
+        boxShadow: '0 8px 28px rgba(0,0,0,0.35)',
+    };
+
     return (
         <>
+            {/* ── CSS ──────────────────────────────────────────────────────── */}
+            <style>{`
+                /* ── Toolbar buttons ── */
+                .pro-toolbar {
+                    display: flex; align-items: center; gap: 6px; padding: 7px;
+                }
+                .pro-btn {
+                    display: flex; justify-content: center; align-items: center;
+                    background: transparent; border: none; color: #a1a1aa;
+                    width: 38px; height: 38px; border-radius: 10px;
+                    cursor: pointer; transition: all 0.18s ease; flex-shrink: 0;
+                }
+                .pro-btn.with-text { width: auto; padding: 0 14px; gap: 7px; font-size: 13px; font-weight: 500; }
+                .pro-btn:hover  { background: rgba(255,255,255,0.09); color: #fff; }
+                .pro-btn.active { background: rgba(74,222,128,0.15); color: #4ade80; }
+                .pro-btn-danger:hover  { background: rgba(239,68,68,0.15); color: #ef4444; }
+                .pro-btn-desmos:hover  { background: rgba(59,130,246,0.15); color: #60a5fa; }
+                .pro-btn-ans   { color: #fde047; }
+                .pro-btn-ans:hover { background: rgba(253,224,71,0.15); color: #fef08a; }
+                .pro-btn-home  { color: #a1a1aa; }
+                .pro-btn-home:hover { background: rgba(255,255,255,0.09); color: #fff; }
+                .pro-btn-nav   { color: #a1a1aa; }
+                .pro-btn-nav:hover { background: rgba(255,255,255,0.09); color: #fff; }
+
+                .pro-divider { width: 1px; height: 22px; background: rgba(255,255,255,0.1); margin: 0 2px; flex-shrink: 0; }
+
+                /* ── Add-shapes dropdown ── */
+                .pro-menu {
+                    position: absolute; top: calc(100% + 10px); left: 50%; transform: translateX(-50%);
+                    background: rgba(22,22,24,0.97); backdrop-filter: blur(24px);
+                    border: 1px solid rgba(255,255,255,0.08); border-radius: 16px;
+                    box-shadow: 0 20px 48px rgba(0,0,0,0.55); padding: 14px;
+                    width: min(350px, 92vw); max-height: 65vh; overflow-y: auto;
+                    color: #fff; z-index: 2000;
+                }
+                .pro-menu-category { font-size: 11px; color: #71717a; margin: 14px 0 7px 4px; font-weight: 600; text-align: right; }
+                .shape-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 5px; }
+                .shape-icon-btn {
+                    display: flex; justify-content: center; align-items: center;
+                    background: transparent; border: 1px solid transparent;
+                    color: #e4e4e7; padding: 9px 0; border-radius: 8px;
+                    cursor: pointer; transition: 0.18s;
+                }
+                .shape-icon-btn:hover { background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.2); transform: scale(1.1); color: #4ade80; }
+                .pro-menu::-webkit-scrollbar { width: 5px; }
+                .pro-menu::-webkit-scrollbar-track { background: transparent; }
+                .pro-menu::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.18); border-radius: 10px; }
+
+                /* ── Responsive: compact toolbar on narrow screens ── */
+                @media (max-width: 600px) {
+                    .pro-toolbar { gap: 3px; padding: 5px; }
+                    .pro-btn { width: 32px; height: 32px; border-radius: 8px; }
+                    .pro-btn.with-text { padding: 0 8px; font-size: 12px; }
+                    .pro-divider { margin: 0 1px; height: 18px; }
+                    .pro-side-btn { width: 36px !important; height: 36px !important; }
+                }
+                @media (max-width: 380px) {
+                    .pro-btn { width: 28px; height: 28px; }
+                    .pro-side-btn { width: 30px !important; height: 30px !important; }
+                }
+
+                /* ── Desmos modal overlay ── */
+                .desmos-overlay {
+                    position: fixed; inset: 0;
+                    background: rgba(0,0,0,0.65);
+                    z-index: 9999;
+                    display: flex; justify-content: center; align-items: center;
+                    backdrop-filter: blur(8px);
+                    /* CRITICAL: force LTR so Desmos keyboard renders correctly */
+                    direction: ltr;
+                    unicode-bidi: isolate;
+                }
+                .desmos-window {
+                    /* Responsive: never exceed viewport, leave room for mobile chrome */
+                    width: min(92vw, 1100px);
+                    height: min(88vh, 820px);
+                    background: #fff;
+                    border-radius: 18px;
+                    position: relative;
+                    box-shadow: 0 24px 64px rgba(0,0,0,0.55);
+                    display: flex; flex-direction: column; overflow: hidden;
+                    direction: ltr;
+                }
+                .desmos-header {
+                    background: #1c1c1e;
+                    padding: 11px 18px;
+                    display: flex; justify-content: space-between; align-items: center;
+                    flex-shrink: 0;
+                    /* Header text is Hebrew → RTL, but the div itself stays LTR */
+                }
+                #desmos-calculator {
+                    flex: 1; width: 100%; min-height: 0;
+                    direction: ltr !important;
+                }
+            `}</style>
+
+            {/* ── Desmos modal ──────────────────────────────────────────────── */}
             {showDesmos && (
-                <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', background: 'rgba(0,0,0,0.6)', zIndex: 9999, display: 'flex', justifyContent: 'center', alignItems: 'center', backdropFilter: 'blur(8px)' }}>
-                    <div style={{ width: '90%', height: '90%', background: '#fff', borderRadius: '16px', position: 'relative', boxShadow: '0 20px 50px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                        <div style={{ background: '#222', padding: '12px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span style={{ fontWeight: 'bold', color: '#fff', fontSize: '1.2rem' }}>מחשבון גרפי (Desmos)</span>
-                            <button onClick={() => setShowDesmos(false)} style={{ background: '#ef4444', color: 'white', border: 'none', borderRadius: '8px', padding: '6px 16px', cursor: 'pointer', fontWeight: 'bold' }}>סגור</button>
+                <div className="desmos-overlay" onClick={(e) => { if (e.target === e.currentTarget) setShowDesmos(false); }}>
+                    <div className="desmos-window">
+                        <div className="desmos-header">
+                            {/* Close on the LEFT so it's natural in LTR layout */}
+                            <button
+                                onClick={() => setShowDesmos(false)}
+                                style={{ background: '#ef4444', color: '#fff', border: 'none', borderRadius: '8px', padding: '5px 14px', cursor: 'pointer', fontWeight: 700, fontSize: 14 }}
+                            >
+                                ✕
+                            </button>
+                            {/* Title on the right (Hebrew) */}
+                            <span style={{ fontWeight: 700, color: '#fff', fontSize: '1.05rem', direction: 'rtl' }}>
+                                מחשבון גרפי (Desmos)
+                            </span>
                         </div>
-                        <div id="desmos-calculator" style={{ flex: 1, width: '100%' }}></div>
+                        {/* This div MUST be dir="ltr" — Desmos injects its virtual keyboard here */}
+                        <div id="desmos-calculator" dir="ltr" />
                     </div>
                 </div>
             )}
 
-            <div className="toolbar-container" style={{ position: 'fixed', top: '20px', left: '50%', transform: 'translateX(-50%)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px', zIndex: 1000 }}>
-                
-                <style>{`
-                    .pro-toolbar { display: flex; align-items: center; gap: 8px; padding: 8px; background: rgba(28, 28, 30, 0.85); backdrop-filter: blur(20px); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 16px; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3); }
-                    .pro-btn { display: flex; justify-content: center; align-items: center; background: transparent; border: none; color: #a1a1aa; width: 40px; height: 40px; border-radius: 10px; cursor: pointer; transition: all 0.2s ease; }
-                    .pro-btn.with-text { width: auto; padding: 0 16px; gap: 8px; font-size: 14px; font-weight: 500; }
-                    .pro-btn:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
-                    .pro-btn.active { background: rgba(74, 222, 128, 0.15); color: #4ade80; }
-                    .pro-btn-danger:hover { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
-                    .pro-btn-desmos:hover { background: rgba(59, 130, 246, 0.15); color: #60a5fa; }
-                    
-                    /* תוספת קטנה לכפתור ה-Ans שלנו שיבלוט טיפה בעין */
-                    .pro-btn-ans { color: #fde047; }
-                    .pro-btn-ans:hover { background: rgba(253, 224, 71, 0.15); color: #fef08a; }
-                    
-                    .pro-divider { width: 1px; height: 24px; background: rgba(255, 255, 255, 0.1); margin: 0 4px; }
-                    .pro-menu { position: absolute; top: calc(100% + 12px); right: 0; background: rgba(28, 28, 30, 0.95); backdrop-filter: blur(24px); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 16px; box-shadow: 0 20px 48px rgba(0, 0, 0, 0.5); padding: 16px; width: 350px; max-height: 70vh; overflow-y: auto; color: #fff; }
-                    .pro-menu-category { font-size: 12px; color: #71717a; margin: 16px 0 8px 4px; font-weight: 600; text-align: right; }
-                    .shape-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
-                    .shape-icon-btn { display: flex; justify-content: center; align-items: center; background: transparent; border: 1px solid transparent; color: #e4e4e7; padding: 10px 0; border-radius: 8px; cursor: pointer; transition: 0.2s; }
-                    .shape-icon-btn:hover { background: rgba(255, 255, 255, 0.1); border-color: rgba(255, 255, 255, 0.2); transform: scale(1.1); color: #4ade80; }
-                    .pro-menu::-webkit-scrollbar { width: 6px; }
-                    .pro-menu::-webkit-scrollbar-track { background: transparent; }
-                    .pro-menu::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 10px; }
-                `}</style>
+            {/* ── Home button — top left ────────────────────────────────────── */}
+            {onBack && (
+                <div style={{ position: 'fixed', top: 16, left: 16, zIndex: 1000 }}>
+                    <button
+                        title="חזרה לבחירת הלוחות"
+                        className="pro-btn pro-btn-home pro-side-btn"
+                        onClick={onBack}
+                        style={{ ...glassPanel, width: 42, height: 42, borderRadius: 12 }}
+                    >
+                        <Icon name="home" size={18} />
+                    </button>
+                </div>
+            )}
 
-                <div className="pro-toolbar">
-                    <button title="צייר" className={`pro-btn ${mode === 'draw' ? 'active' : ''}`} onClick={() => { setMode('draw'); setShowAddMenu(false); }}><Icon name="draw" /></button>
-                    <button title="מחק" className={`pro-btn ${mode === 'erase' ? 'active' : ''}`} onClick={() => { setMode('erase'); setShowAddMenu(false); }}><Icon name="erase" /></button>
-                    <button title="טקסט (MathLive)" className={`pro-btn ${mode === 'text' ? 'active' : ''}`} onClick={() => { setMode('text'); setShowAddMenu(false); }}><Icon name="text" /></button>
-                    <button title="בחר / ערוך" className={`pro-btn ${mode === 'select' ? 'active' : ''}`} onClick={() => { setMode('select'); setShowAddMenu(false); }}><Icon name="select" /></button>
-                    
-                    <div className="pro-divider"></div>
-                    
-                    {/* כפתור ה-Ans החדש! פותר לך את המשוואה המסומנת */}
+            {/* ── Undo / Redo — top right ───────────────────────────────────── */}
+            <div style={{ position: 'fixed', top: 16, right: 16, zIndex: 1000, display: 'flex', gap: 8 }}>
+                <button
+                    title="בטל (Ctrl+Z)"
+                    className="pro-btn pro-btn-nav pro-side-btn"
+                    onClick={() => act('undo')}
+                    style={{ ...glassPanel, width: 42, height: 42, borderRadius: 12 }}
+                >
+                    <Icon name="undo" size={18} />
+                </button>
+                <button
+                    title="בצע שוב (Ctrl+Y)"
+                    className="pro-btn pro-btn-nav pro-side-btn"
+                    onClick={() => act('redo')}
+                    style={{ ...glassPanel, width: 42, height: 42, borderRadius: 12 }}
+                >
+                    <Icon name="redo" size={18} />
+                </button>
+            </div>
+
+            {/* ── Main toolbar — top centre ─────────────────────────────────── */}
+            <div
+                style={{
+                    position: 'fixed', top: 16, left: '50%', transform: 'translateX(-50%)',
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
+                    zIndex: 1000,
+                    /* Never overflow the viewport; allow horizontal scroll as last resort */
+                    maxWidth: 'calc(100vw - 130px)', /* leave room for home + undo/redo */
+                }}
+            >
+                {/* Primary row */}
+                <div className="pro-toolbar" style={{ ...glassPanel, overflowX: 'auto', maxWidth: '100%' }}>
+                    <button title="צייר"        className={`pro-btn ${mode==='draw'   ? 'active':''}`} onClick={() => { setMode('draw');   setShowAddMenu(false); }}><Icon name="draw"   /></button>
+                    <button title="מחק"         className={`pro-btn ${mode==='erase'  ? 'active':''}`} onClick={() => { setMode('erase');  setShowAddMenu(false); }}><Icon name="erase"  /></button>
+                    <button title="טקסט"        className={`pro-btn ${mode==='text'   ? 'active':''}`} onClick={() => { setMode('text');   setShowAddMenu(false); }}><Icon name="text"   /></button>
+                    <button title="בחר / ערוך" className={`pro-btn ${mode==='select' ? 'active':''}`} onClick={() => { setMode('select'); setShowAddMenu(false); }}><Icon name="select" /></button>
+
+                    <div className="pro-divider" />
+
                     <button title="פתור משוואה (Ans)" className="pro-btn pro-btn-ans" onClick={() => act('solveActiveBox')}><Icon name="ans" /></button>
 
-                    <div className="pro-divider"></div>
-                    
+                    <div className="pro-divider" />
+
                     <button title="מחשבון גרפי (Desmos)" className="pro-btn pro-btn-desmos" onClick={() => setShowDesmos(true)}><Icon name="desmos" /></button>
 
-                    <div className="pro-divider"></div>
+                    <div className="pro-divider" />
 
+                    {/* Add shapes dropdown */}
                     <div style={{ position: 'relative' }} ref={menuRef}>
                         <button className={`pro-btn with-text ${showAddMenu ? 'active' : ''}`} onClick={() => setShowAddMenu(!showAddMenu)}>
                             <Icon name="add" />
                         </button>
-                        
                         {showAddMenu && (
                             <div className="pro-menu" dir="rtl">
-                                <div style={{ display: 'flex', gap: '8px' }}>
-                                    <button className="pro-btn with-text" style={{ flex: 1, background: 'rgba(255,255,255,0.05)' }} onClick={() => fileInputRef.current.click()}><Icon name="image" /> תמונה</button>
-                                    <button className="pro-btn with-text" style={{ flex: 1, background: 'rgba(255,255,255,0.05)' }} onClick={handleAddGrid}><Icon name="grid" /> צירים</button>
+                                <div style={{ display: 'flex', gap: 7 }}>
+                                    <button className="pro-btn with-text" style={{ flex: 1, background: 'rgba(255,255,255,0.05)' }} onClick={() => fileInputRef.current.click()}><Icon name="image" size={16} /> תמונה</button>
+                                    <button className="pro-btn with-text" style={{ flex: 1, background: 'rgba(255,255,255,0.05)' }} onClick={handleAddGrid}><Icon name="grid" size={16} /> צירים</button>
                                 </div>
-                                
                                 {shapeCategories.map((cat, idx) => (
                                     <div key={idx}>
                                         <div className="pro-menu-category">{cat.title}</div>
                                         <div className="shape-grid">
                                             {cat.shapes.map(shape => (
                                                 <button key={shape} title={shape} className="shape-icon-btn" onClick={() => { act('addShape', shape); setShowAddMenu(false); }}>
-                                                    <Icon name={shape} />
+                                                    <Icon name={shape} size={18} />
                                                 </button>
                                             ))}
                                         </div>
@@ -213,32 +350,38 @@ export default function Toolbar({ mode, setMode, drawColor, setDrawColor, textCo
                         )}
                     </div>
 
-                    <div className="pro-divider"></div>
-                    
+                    <div className="pro-divider" />
+
                     <button title="נקה לוח" className="pro-btn pro-btn-danger" onClick={() => act('clearBoard')}><Icon name="clear" /></button>
                 </div>
 
-                <input type="file" ref={fileInputRef} style={{ display: 'none' }} accept="image/*" onChange={handleImageUpload} />
-
+                {/* Color row (draw / text mode only) */}
                 {(mode === 'draw' || mode === 'text') && (
-                    <div className="pro-toolbar" style={{ padding: '6px 12px' }}>
+                    <div className="pro-toolbar" style={{ ...glassPanel, padding: '5px 10px' }}>
                         {colors.map(c => (
-                            <button 
-                                key={c} 
-                                style={{ background: c, width: '22px', height: '22px', borderRadius: '50%', border: activeColor === c ? '2px solid white' : '2px solid transparent', boxShadow: activeColor === c ? '0 0 0 2px rgba(255,255,255,0.2)' : 'none', cursor: 'pointer', transition: '0.2s', margin: '0 4px' }} 
+                            <button
+                                key={c}
+                                style={{
+                                    background: c, width: 20, height: 20, borderRadius: '50%', flexShrink: 0,
+                                    border: activeColor === c ? '2px solid white' : '2px solid transparent',
+                                    boxShadow: activeColor === c ? '0 0 0 2px rgba(255,255,255,0.25)' : 'none',
+                                    cursor: 'pointer', transition: '0.18s', margin: '0 3px',
+                                }}
                                 onClick={() => handleColorChange(c)}
                             />
                         ))}
                         {mode === 'text' && (
                             <>
-                                <div className="pro-divider"></div>
-                                <button className="pro-btn" style={{ width: 'auto', padding: '0 8px', fontSize: '16px', fontWeight: 'bold', color: '#fff' }} onClick={() => { setGlobalFontSize(prev => prev + 5); act('updateGlobalFontSize', 5); }}>A+</button>
-                                <button className="pro-btn" style={{ width: 'auto', padding: '0 8px', fontSize: '16px', fontWeight: 'bold', color: '#fff' }} onClick={() => { setGlobalFontSize(prev => Math.max(16, prev - 5)); act('updateGlobalFontSize', -5); }}>A-</button>
+                                <div className="pro-divider" />
+                                <button className="pro-btn" style={{ width: 'auto', padding: '0 7px', fontSize: 14, fontWeight: 700, color: '#fff' }} onClick={() => { setGlobalFontSize(prev => prev + 5); act('updateGlobalFontSize', 5); }}>A+</button>
+                                <button className="pro-btn" style={{ width: 'auto', padding: '0 7px', fontSize: 14, fontWeight: 700, color: '#fff' }} onClick={() => { setGlobalFontSize(prev => Math.max(16, prev - 5)); act('updateGlobalFontSize', -5); }}>A-</button>
                             </>
                         )}
                     </div>
                 )}
             </div>
+
+            <input type="file" ref={fileInputRef} style={{ display: 'none' }} accept="image/*" onChange={handleImageUpload} />
         </>
     );
 }
