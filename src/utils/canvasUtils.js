@@ -25,7 +25,6 @@ export const createGridGroup = (cols, rows, color) => {
     return new fabric.Group(objects, { selectable: true });
 };
 
-// יצירת מצולעים אוטומטית לפי מספר צלעות
 const createRegularPolygon = (sides, radius) => {
     const points = [];
     for (let i = 0; i < sides; i++) {
@@ -35,7 +34,6 @@ const createRegularPolygon = (sides, radius) => {
     return points;
 };
 
-// יצירת כוכבים אוטומטית
 const createStarPolygon = (pointsNum, outerRadius, innerRadius) => {
     const points = [];
     for (let i = 0; i < pointsNum * 2; i++) {
@@ -46,20 +44,18 @@ const createStarPolygon = (pointsNum, outerRadius, innerRadius) => {
     return points;
 };
 
-export const createShape = (type, color, center) => {
+export const createShape = (type, color, center, strokeWidth = 3) => {
     let obj = null;
-    const commonProps = { fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: getStrokeWidth(), originX: 'center', originY: 'center', left: center.x, top: center.y };
+    const commonProps = { fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: strokeWidth, originX: 'center', originY: 'center', left: center.x, top: center.y };
     const pathProps = { ...commonProps, fill: 'transparent' };
 
     switch(type) {
-        // צורות בסיסיות מעוגלות
         case 'rect': obj = new fabric.Rect({ ...commonProps, width: 100, height: 100 }); break;
         case 'circle': obj = new fabric.Circle({ ...commonProps, radius: 50 }); break;
         case 'ellipse': obj = new fabric.Ellipse({ ...commonProps, rx: 70, ry: 40 }); break;
         case 'half-circle': obj = new fabric.Path("M 0 50 A 50 50 0 0 1 100 50 Z", commonProps); break;
         
-        // מצולעים (Polygons)
-        case 'triangle': obj = new fabric.Triangle({ ...commonProps, width: 100, height: 100 }); break;
+        case 'triangle': obj = new fabric.Polygon([{x:50,y:0},{x:100,y:100},{x:0,y:100}], commonProps); break;
         case 'right-triangle': obj = new fabric.Polygon([{x:0,y:0},{x:0,y:100},{x:100,y:100}], commonProps); break;
         case 'diamond': obj = new fabric.Polygon([{x:50,y:0},{x:100,y:50},{x:50,y:100},{x:0,y:50}], commonProps); break;
         case 'pentagon': obj = new fabric.Polygon(createRegularPolygon(5, 50), commonProps); break;
@@ -70,23 +66,19 @@ export const createShape = (type, color, center) => {
         case 'parallelogram': obj = new fabric.Polygon([{x:25,y:0},{x:100,y:0},{x:75,y:100},{x:0,y:100}], commonProps); break;
         case 'trapezoid': obj = new fabric.Polygon([{x:25,y:0},{x:75,y:0},{x:100,y:100},{x:0,y:100}], commonProps); break;
         
-        // כוכבים
         case 'star-4': obj = new fabric.Polygon(createStarPolygon(4, 50, 20), commonProps); break;
         case 'star-5': obj = new fabric.Polygon(createStarPolygon(5, 50, 20), commonProps); break;
         case 'star-6': obj = new fabric.Polygon(createStarPolygon(6, 50, 25), commonProps); break;
 
-        // חצים מלאים (Block Arrows)
         case 'arrow-right': obj = new fabric.Polygon([{x:0,y:33},{x:50,y:33},{x:50,y:0},{x:100,y:50},{x:50,y:100},{x:50,y:66},{x:0,y:66}], commonProps); break;
         case 'arrow-left': obj = new fabric.Polygon([{x:100,y:33},{x:50,y:33},{x:50,y:0},{x:0,y:50},{x:50,y:100},{x:50,y:66},{x:100,y:66}], commonProps); break;
         case 'arrow-up': obj = new fabric.Polygon([{x:33,y:100},{x:33,y:50},{x:0,y:50},{x:50,y:0},{x:100,y:50},{x:66,y:50},{x:66,y:100}], commonProps); break;
         case 'arrow-down': obj = new fabric.Polygon([{x:33,y:0},{x:33,y:50},{x:0,y:50},{x:50,y:100},{x:100,y:50},{x:66,y:50},{x:66,y:0}], commonProps); break;
         
-        // סימוני מתמטיקה
         case 'math-plus': obj = new fabric.Polygon([{x:35,y:0},{x:65,y:0},{x:65,y:35},{x:100,y:35},{x:100,y:65},{x:65,y:65},{x:65,y:100},{x:35,y:100},{x:35,y:65},{x:0,y:65},{x:0,y:35},{x:35,y:35}], commonProps); break;
         case 'math-minus': obj = new fabric.Rect({ ...commonProps, width: 100, height: 30 }); break;
         case 'math-multiply': obj = new fabric.Polygon([{x:20,y:0},{x:50,y:30},{x:80,y:0},{x:100,y:20},{x:70,y:50},{x:100,y:80},{x:80,y:100},{x:50,y:70},{x:20,y:100},{x:0,y:80},{x:30,y:50},{x:0,y:20}], commonProps); break;
 
-        // צורות זרימה (Flowchart) ושונות
         case 'heart': obj = new fabric.Path("M 50 30 A 20 20 0 0 1 90 30 Q 90 60 50 90 Q 10 60 10 30 A 20 20 0 0 1 50 30 z", commonProps); break;
         case 'cylinder': obj = new fabric.Path("M 0 20 A 50 20 0 0 0 100 20 A 50 20 0 0 0 0 20 M 0 20 L 0 80 A 50 20 0 0 0 100 80 L 100 20", pathProps); break;
         case 'cube': obj = new fabric.Path("M 0 30 L 70 30 L 100 0 L 30 0 Z M 70 30 L 70 100 L 100 70 L 100 0 Z M 0 30 L 0 100 L 70 100 L 70 30 Z", pathProps); break;
@@ -98,6 +90,9 @@ export const createShape = (type, color, center) => {
         default: break;
     }
 
-    if (obj) obj.scale(1.5);
+    if (obj) {
+        obj.customType = type; 
+        obj.scale(1.5);
+    }
     return obj;
 };

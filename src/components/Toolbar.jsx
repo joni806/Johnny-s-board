@@ -363,19 +363,19 @@ export default function Toolbar({ mode, setMode, drawColor, setDrawColor, textCo
                         <button title="נקה לוח" className="pro-btn pro-btn-danger" onClick={() => act('clearBoard')}><Icon name="clear" /></button>
                     </div>
 
-                    {/* ── התפריט נשלף החוצה לכאן, הרחק מפס הגלילה ── */}
+                 {/* ── התפריט נשלף החוצה לכאן, הרחק מפס הגלילה ── */}
                     {showAddMenu && (
                         <div className="pro-menu" dir="rtl">
                             <div style={{ display: 'flex', gap: 7 }}>
-                                <button className="pro-btn with-text" style={{ flex: 1, background: 'rgba(255,255,255,0.05)' }} onClick={() => fileInputRef.current.click()}><Icon name="image" size={16} /> תמונה</button>
-                                <button className="pro-btn with-text" style={{ flex: 1, background: 'rgba(255,255,255,0.05)' }} onClick={handleAddGrid}><Icon name="grid" size={16} /> צירים</button>
+                                <button className="pro-btn with-text" style={{ flex: 1, background: 'rgba(255,255,255,0.05)' }} onPointerDown={(e) => { e.preventDefault(); fileInputRef.current.click(); }}><Icon name="image" size={16} /> תמונה</button>
+                                <button className="pro-btn with-text" style={{ flex: 1, background: 'rgba(255,255,255,0.05)' }} onPointerDown={(e) => { e.preventDefault(); handleAddGrid(); }}><Icon name="grid" size={16} /> צירים</button>
                             </div>
                             {shapeCategories.map((cat, idx) => (
                                 <div key={idx}>
                                     <div className="pro-menu-category">{cat.title}</div>
                                     <div className="shape-grid">
                                         {cat.shapes.map(shape => (
-                                            <button key={shape} title={shape} className="shape-icon-btn" onClick={() => { act('addShape', shape); setShowAddMenu(false); }}>
+                                            <button key={shape} title={shape} className="shape-icon-btn" onPointerDown={(e) => { e.preventDefault(); act('addShape', shape); setShowAddMenu(false); }}>
                                                 <Icon name={shape} size={18} />
                                             </button>
                                         ))}

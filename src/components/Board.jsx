@@ -70,13 +70,14 @@ const s = useRef({
     longPressTimer: null,
     longPressStartX: 0,
     longPressStartY: 0,
-    hasMovedEnoughToDraw: false, // ← הנה המשתנה החדש שהוספנו
+    hasMovedEnoughToDraw: false, 
     lastTapTime: 0,
     lastTapX: 0,
     lastTapY: 0,
-    singleTapExitTimer: null, // ← הוספנו כאן
-    longPressFired: false,    // ← הוספנו כאן
-    isSelectingEditCircle: false, // ← הוסף שורה זו
+    singleTapExitTimer: null, 
+    longPressFired: false,   
+    isSelectingEditCircle: false, 
+    isSelectingShape: false, // ← התוספת שלנו למעקב אחרי גרירת הצורה כולה
 }).current;
 
 const syncCustomLayers = () => {
@@ -162,9 +163,9 @@ const syncCustomLayers = () => {
                 s.longPressFired = false; // איפוס תמיד בסיום הרמת האצבע
             });
 
-    fCanvas.current.on('selection:cleared', () => {
+  fCanvas.current.on('selection:cleared', () => {
                 if (s.isEnteringNodeEdit) return; 
-                if (s.isSelectingEditCircle) return; // ← הוסף את השורה הזו
+                if (s.isSelectingEditCircle || s.isSelectingShape) return; // ← הוספנו את המשתנה החדש כדי שלחיצה על הצורה לא תסגור את העריכה
                 exitNodeEditMode();
                 if (modeRef.current === 'select' && s.wasAutoSelected && s.editCircles.length === 0) {
                     setMode('draw'); s.wasAutoSelected = false;
@@ -240,8 +241,17 @@ window.addEventListener('pointercancel', handleGlobalPointerGone);
                 zoom = Math.max(0.1, Math.min(20, zoom));
                 const rect = viewport.getBoundingClientRect();
                 fCanvas.current.zoomToPoint({ x: e.clientX - rect.left, y: e.clientY - rect.top }, zoom);
+                
+                // ← התוספת שלנו: עדכון דינמי של העיגולים תוך כדי זום בעכבר
+                if (s.editCircles.length > 0) {
+                    s.editCircles.forEach(c => {
+                        c.set({ radius: 10 / zoom, strokeWidth: 2 / zoom });
+                        c.setCoords();
+                    });
+                }
+                
                 syncCustomLayers();
-            } else { 
+            } else {
                 const delta = new fabric.Point(-e.deltaX, -e.deltaY);
                 fCanvas.current.relativePan(delta);
                 syncCustomLayers();
@@ -416,12 +426,19 @@ const handleViewportPointerMove = (e) => {
         if (s.multiTouchMoved) {
             const rect = viewportRef.current.getBoundingClientRect();
 
-            // זום פינץ' (ללא הגבלה)
+          // זום פינץ' (ללא הגבלה)
             if (s.pinchInitialDist > 5) {
                 const newZoom = Math.max(0.02, Math.min(100, s.pinchInitialZoom * (currentDist / s.pinchInitialDist)));
                 fCanvas.current.zoomToPoint({ x: currentMidX - rect.left, y: currentMidY - rect.top }, newZoom);
+                
+                // ← התוספת שלנו: עדכון דינמי של העיגולים תוך כדי צביטה במסך
+                if (s.editCircles.length > 0) {
+                    s.editCircles.forEach(c => {
+                        c.set({ radius: 10 / newZoom, strokeWidth: 2 / newZoom });
+                        c.setCoords();
+                    });
+                }
             }
-
             // פאן לפי תנועת נקודת האמצע
             const delta = new fabric.Point(currentMidX - s.lastX, currentMidY - s.lastY);
             fCanvas.current.relativePan(delta);
@@ -502,132 +519,202 @@ const handleViewportPointerUp = (e) => {
     const buildArrow = (start, end, color) => { let angle = Math.atan2(end.y - start.y, end.x - start.x); let headlen = 20; const pathData = `M ${start.x} ${start.y} L ${end.x} ${end.y} L ${end.x - headlen * Math.cos(angle - Math.PI / 6)} ${end.y - headlen * Math.sin(angle - Math.PI / 6)} M ${end.x} ${end.y} L ${end.x - headlen * Math.cos(angle + Math.PI / 6)} ${end.y - headlen * Math.sin(angle + Math.PI / 6)}`; let p = new fabric.Path(pathData, { fill: 'transparent', stroke: color, strokeWidth: getStrokeWidth(), strokeLineCap: 'round', strokeLineJoin: 'round', selectable: true }); p.customType = 'arrow'; return p; };
     const buildCurve = (start, cp, end, color) => { const pathData = `M ${start.x} ${start.y} Q ${cp.x} ${cp.y} ${end.x} ${end.y}`; let p = new fabric.Path(pathData, { fill: 'transparent', stroke: color, strokeWidth: getStrokeWidth(), strokeLineCap: 'round', selectable: true }); p.customType = 'curve'; return p; };
 
-    const handleDeleteTarget = () => {
-    if (contextMenu.target) {
-        // שומרים את האובייקט לפני ש-exitNodeEditMode מאפס אותו
-        const objToDelete = s.editingOriginalObj || contextMenu.target;
-        exitNodeEditMode(); // ← מסיר עיגולים כחולים
-        fCanvas.current.remove(objToDelete);
-        fCanvas.current.remove(contextMenu.target); // גם אם הוחלף — בטוח להריץ
-        fCanvas.current.discardActiveObject();
-        fCanvas.current.requestRenderAll();
-        saveState();
-        setContextMenu(prev => ({...prev, visible: false}));
-    }
-};
-    const exitNodeEditMode = () => {
-            if (s.editCircles.length > 0) {
-                s.editCircles.forEach(c => fCanvas.current.remove(c)); s.editCircles = [];
-                if (s.editingOriginalObj) { 
-                    s.editingOriginalObj.set({ opacity: 1, selectable: true, evented: true, hasControls: true }); 
-                    fCanvas.current.discardActiveObject(); // ← זה השינוי
-                    s.editingOriginalObj = null; 
-                }
-                fCanvas.current.requestRenderAll();
-            }
-        };
+  const handleDeleteTarget = () => {
+        if (contextMenu.target) {
+            const objToDelete = s.editingOriginalObj || contextMenu.target;
+            exitNodeEditMode(); 
+            fCanvas.current.remove(objToDelete);
+            fCanvas.current.remove(contextMenu.target); 
+            fCanvas.current.discardActiveObject();
+            fCanvas.current.requestRenderAll();
+            saveState();
+            setContextMenu(prev => ({...prev, visible: false}));
+        }
+    };
 
-    const enterNodeEditMode = (obj) => {
-        s.isEnteringNodeEdit = true; exitNodeEditMode(); s.editingOriginalObj = obj;
-        obj.set({ selectable: false, evented: false, hasControls: false, opacity: 0.5 }); fCanvas.current.discardActiveObject();
-        const color = obj.stroke; const m = obj.calcTransformMatrix();
-        const getAbs = (p) => fabric.util.transformPoint({ x: p.x - (obj.pathOffset ? obj.pathOffset.x : 0), y: p.y - (obj.pathOffset ? obj.pathOffset.y : 0) }, m);
+    // ← פונקציה חדשה שקושרת את הצורה לעיגולים הכחולים ומאפשרת לגרור את כולה
+    const bindShapeEvents = (shape) => {
+        shape.set({ 
+            selectable: true, evented: true, hasControls: false, hasBorders: false, 
+            opacity: 0.5, lockRotation: true, lockScalingX: true, lockScalingY: true 
+        });
+
+        shape.off('mousedown'); shape.off('mouseup'); shape.off('moving'); shape.off('modified');
+
+        shape.on('mousedown', () => { s.isSelectingShape = true; });
+        shape.on('mouseup', () => { s.isSelectingShape = false; });
+
+        let lastLeft = shape.left;
+        let lastTop = shape.top;
+
+        shape.on('moving', () => {
+            const dx = shape.left - lastLeft;
+            const dy = shape.top - lastTop;
+            s.editCircles.forEach(c => {
+                c.set({ left: c.left + dx, top: c.top + dy });
+                c.setCoords();
+            });
+            lastLeft = shape.left;
+            lastTop = shape.top;
+        });
+
+        shape.on('modified', () => { saveState(); });
+    };
+
+    const exitNodeEditMode = () => {
+        if (s.editCircles.length > 0) {
+            s.editCircles.forEach(c => fCanvas.current.remove(c)); s.editCircles = [];
+            if (s.editingOriginalObj) { 
+                s.editingOriginalObj.set({ 
+                    opacity: 1, selectable: true, evented: true, hasControls: true, 
+                    lockRotation: false, lockScalingX: false, lockScalingY: false 
+                }); 
+                
+                s.editingOriginalObj.off('mousedown');
+                s.editingOriginalObj.off('mouseup');
+                s.editingOriginalObj.off('moving');
+                s.editingOriginalObj.off('modified');
+                
+                fCanvas.current.discardActiveObject(); 
+                s.editingOriginalObj = null; 
+            }
+            fCanvas.current.requestRenderAll();
+        }
+    };
+
+   const enterNodeEditMode = (obj) => {
+        s.isEnteringNodeEdit = true; 
+        exitNodeEditMode(); 
+        s.editingOriginalObj = obj;
+        
+        bindShapeEvents(obj); // מפעיל את הגרירה החכמה על הצורה
+        fCanvas.current.setActiveObject(obj); // משאיר את הצורה פעילה כך שנוכל לגרור אותה מיד
+        
+        const color = obj.stroke; 
+        const m = obj.calcTransformMatrix();
+        const getAbs = (p) => fabric.util.transformPoint({ 
+            x: p.x - (obj.pathOffset ? obj.pathOffset.x : 0), 
+            y: p.y - (obj.pathOffset ? obj.pathOffset.y : 0) 
+        }, m);
 
         const makeNode = (x, y, onDrag) => {
-                    const circle = new fabric.Circle({ left: x, top: y, originX: 'center', originY: 'center', radius: 10, fill: '#3b82f6', stroke: '#ffffff', strokeWidth: 2, hasControls: false, hasBorders: false, selectable: true });
-                    
-                    // ← הוסף את שתי השורות האלו כדי להדליק/לכבות את הדגל
-                    circle.on('mousedown', () => { s.isSelectingEditCircle = true; });
-                    circle.on('mouseup', () => { s.isSelectingEditCircle = false; });
-                    
-                    circle.on('moving', () => { onDrag(circle); fCanvas.current.requestRenderAll(); });
-                    circle.on('modified', () => { saveState(); }); fCanvas.current.add(circle); s.editCircles.push(circle); return circle;
-                };
-            
-        if (obj.customType === 'triangle' && obj.points) {
-            const p0 = getAbs(obj.points[0]); const p1 = getAbs(obj.points[1]); const p2 = getAbs(obj.points[2]);
-            const topN = makeNode(p0.x, p0.y, (c) => updateNodeGeometry(new fabric.Polygon([{x: c.left, y: c.top}, {x: brN.left, y: brN.top}, {x: blN.left, y: blN.top}], { fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'triangle' })));
-            const brN = makeNode(p1.x, p1.y, (c) => updateNodeGeometry(new fabric.Polygon([{x: topN.left, y: topN.top}, {x: c.left, y: c.top}, {x: blN.left, y: blN.top}], { fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'triangle' })));
-            const blN = makeNode(p2.x, p2.y, (c) => updateNodeGeometry(new fabric.Polygon([{x: topN.left, y: topN.top}, {x: brN.left, y: brN.top}, {x: c.left, y: c.top}], { fill: 'rgba(255, 255, 255, 0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'triangle' })));
-       
-            } else if (obj.customType === 'rect') {
-            const tl = obj.getPointByOrigin('left', 'top');
-            const br = obj.getPointByOrigin('right', 'bottom');
+            const currentZoom = fCanvas.current.getZoom();
+            const circle = new fabric.Circle({ 
+                left: x, top: y, originX: 'center', originY: 'center', 
+                radius: 10 / currentZoom, fill: '#3b82f6', stroke: '#ffffff', 
+                strokeWidth: 2 / currentZoom, hasControls: false, hasBorders: false, selectable: true 
+            });
+            circle.on('mousedown', () => { s.isSelectingEditCircle = true; });
+            circle.on('mouseup', () => { s.isSelectingEditCircle = false; });
+            circle.on('moving', () => { onDrag(circle); fCanvas.current.requestRenderAll(); });
+            circle.on('modified', () => { saveState(); });
+            fCanvas.current.add(circle); 
+            s.editCircles.push(circle); 
+            return circle;
+        };
 
+        // 1. טיפול בכל צורה שיש לה נקודות
+        if (obj.points) {
+            const nodes = [];
+            obj.points.forEach((p) => {
+                const absP = getAbs(p);
+                const n = makeNode(absP.x, absP.y, () => {
+                    const absolutePoints = nodes.map(nd => ({ x: nd.left, y: nd.top }));
+                    updateNodeGeometry(new fabric.Polygon(absolutePoints, { 
+                        fill: obj.fill, stroke: color, strokeWidth: obj.strokeWidth, 
+                        strokeLineJoin: 'round', customType: obj.customType 
+                    }));
+                });
+                nodes.push(n);
+            });
+        }
+        // 2. מלבנים
+        else if (obj.customType === 'rect') {
+            const tl = obj.getPointByOrigin('left', 'top'); const br = obj.getPointByOrigin('right', 'bottom');
             const tlN = makeNode(tl.x, tl.y, (c) => {
                 const nL = Math.min(c.left, brN.left), nT = Math.min(c.top, brN.top);
-                trN.set({ left: Math.max(c.left, brN.left), top: Math.min(c.top, brN.top) }); trN.setCoords(); // ← הוסף setCoords
-                blN.set({ left: Math.min(c.left, brN.left), top: Math.max(c.top, brN.top) }); blN.setCoords(); // ← הוסף setCoords
-                updateNodeGeometry(new fabric.Rect({ originX: 'left', originY: 'top', left: nL, top: nT, width: Math.abs(brN.left - c.left), height: Math.abs(brN.top - c.top), fill: 'rgba(255,255,255,0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'rect' }));
+                trN.set({ left: Math.max(c.left, brN.left), top: Math.min(c.top, brN.top) }); trN.setCoords();
+                blN.set({ left: Math.min(c.left, brN.left), top: Math.max(c.top, brN.top) }); blN.setCoords();
+                updateNodeGeometry(new fabric.Rect({ originX: 'left', originY: 'top', left: nL, top: nT, width: Math.abs(brN.left - c.left), height: Math.abs(brN.top - c.top), fill: obj.fill, stroke: color, strokeWidth: obj.strokeWidth, customType: 'rect' }));
             });
             const trN = makeNode(br.x, tl.y, (c) => {
                 const nL = Math.min(blN.left, c.left), nT = Math.min(c.top, blN.top);
-                tlN.set({ left: Math.min(c.left, blN.left), top: Math.min(c.top, blN.top) }); tlN.setCoords(); // ← הוסף setCoords
-                brN.set({ left: Math.max(c.left, blN.left), top: Math.max(c.top, blN.top) }); brN.setCoords(); // ← הוסף setCoords
-                updateNodeGeometry(new fabric.Rect({ originX: 'left', originY: 'top', left: nL, top: nT, width: Math.abs(c.left - blN.left), height: Math.abs(blN.top - c.top), fill: 'rgba(255,255,255,0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'rect' }));
+                tlN.set({ left: Math.min(c.left, blN.left), top: Math.min(c.top, blN.top) }); tlN.setCoords();
+                brN.set({ left: Math.max(c.left, blN.left), top: Math.max(c.top, blN.top) }); brN.setCoords();
+                updateNodeGeometry(new fabric.Rect({ originX: 'left', originY: 'top', left: nL, top: nT, width: Math.abs(c.left - blN.left), height: Math.abs(blN.top - c.top), fill: obj.fill, stroke: color, strokeWidth: obj.strokeWidth, customType: 'rect' }));
             });
             const brN = makeNode(br.x, br.y, (c) => {
                 const nL = Math.min(tlN.left, c.left), nT = Math.min(tlN.top, c.top);
-                trN.set({ left: Math.max(c.left, tlN.left), top: Math.min(c.top, tlN.top) }); trN.setCoords(); // ← הוסף setCoords
-                blN.set({ left: Math.min(c.left, tlN.left), top: Math.max(c.top, tlN.top) }); blN.setCoords(); // ← הוסף setCoords
-                updateNodeGeometry(new fabric.Rect({ originX: 'left', originY: 'top', left: nL, top: nT, width: Math.abs(c.left - tlN.left), height: Math.abs(c.top - tlN.top), fill: 'rgba(255,255,255,0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'rect' }));
+                trN.set({ left: Math.max(c.left, tlN.left), top: Math.min(c.top, tlN.top) }); trN.setCoords();
+                blN.set({ left: Math.min(c.left, tlN.left), top: Math.max(c.top, tlN.top) }); blN.setCoords();
+                updateNodeGeometry(new fabric.Rect({ originX: 'left', originY: 'top', left: nL, top: nT, width: Math.abs(c.left - tlN.left), height: Math.abs(c.top - tlN.top), fill: obj.fill, stroke: color, strokeWidth: obj.strokeWidth, customType: 'rect' }));
             });
             const blN = makeNode(tl.x, br.y, (c) => {
                 const nL = Math.min(c.left, trN.left), nT = Math.min(trN.top, c.top);
-                tlN.set({ left: Math.min(c.left, trN.left), top: Math.min(c.top, trN.top) }); tlN.setCoords(); // ← הוסף setCoords
-                brN.set({ left: Math.max(c.left, trN.left), top: Math.max(c.top, trN.top) }); brN.setCoords(); // ← הוסף setCoords
-                updateNodeGeometry(new fabric.Rect({ originX: 'left', originY: 'top', left: nL, top: nT, width: Math.abs(trN.left - c.left), height: Math.abs(c.top - trN.top), fill: 'rgba(255,255,255,0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'rect' }));
-            });
-            
-            } else if (obj.customType === 'curve' && obj.path) {
-                const pStart = getAbs({x: obj.path[0][1], y: obj.path[0][2]}); const pCp = getAbs({x: obj.path[1][1], y: obj.path[1][2]}); const pEnd = getAbs({x: obj.path[1][3], y: obj.path[1][4]});
-                const sN = makeNode(pStart.x, pStart.y, (c) => updateNodeGeometry(buildCurve({x: c.left, y: c.top}, {x: cpN.left, y: cpN.top}, {x: eN.left, y: eN.top}, color)));
-                const cpN = makeNode(pCp.x, pCp.y, (c) => updateNodeGeometry(buildCurve({x: sN.left, y: sN.top}, {x: c.left, y: c.top}, {x: eN.left, y: eN.top}, color)));
-                const eN = makeNode(pEnd.x, pEnd.y, (c) => updateNodeGeometry(buildCurve({x: sN.left, y: sN.top}, {x: cpN.left, y: cpN.top}, {x: c.left, y: c.top}, color)));
-        
-        
-            } else if (obj.customType === 'arrow' && obj.path) {
-                const pStart = getAbs({x: obj.path[0][1], y: obj.path[0][2]}); const pEnd = getAbs({x: obj.path[1][1], y: obj.path[1][2]});
-                const sN = makeNode(pStart.x, pStart.y, (c) => updateNodeGeometry(buildArrow({x: c.left, y: c.top}, {x: eN.left, y: eN.top}, color)));
-                const eN = makeNode(pEnd.x, pEnd.y, (c) => updateNodeGeometry(buildArrow({x: sN.left, y: sN.top}, {x: c.left, y: c.top}, color)));
-        
-            } else if (obj.customType === 'line') {
-                const pts = obj.calcLinePoints(); const p1 = fabric.util.transformPoint({ x: pts.x1, y: pts.y1 }, m); const p2 = fabric.util.transformPoint({ x: pts.x2, y: pts.y2 }, m);
-                const sN = makeNode(p1.x, p1.y, (c) => updateNodeGeometry(buildLine({x: c.left, y: c.top}, {x: eN.left, y: eN.top}, color)));
-                const eN = makeNode(p2.x, p2.y, (c) => updateNodeGeometry(buildLine({x: sN.left, y: sN.top}, {x: c.left, y: c.top}, color)));
-        
-         } else if (obj.customType === 'ellipse') {
-            const center = obj.getPointByOrigin('center', 'center');
-            const rx = obj.rx * obj.scaleX;
-            const ry = obj.ry * obj.scaleY;
-
-            const rN = makeNode(center.x + rx, center.y, (c) => {
-                const newRx = Math.max(1, Math.abs(c.left - center.x));
-                lN.set({ left: center.x - newRx, top: center.y }); lN.setCoords(); // ← הוסף
-                updateNodeGeometry(new fabric.Ellipse({ originX: 'center', originY: 'center', left: center.x, top: center.y, rx: newRx, ry: Math.max(1, Math.abs(bN.top - center.y)), fill: 'rgba(255,255,255,0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'ellipse' }));
-            });
-            const lN = makeNode(center.x - rx, center.y, (c) => {
-                const newRx = Math.max(1, Math.abs(c.left - center.x));
-                rN.set({ left: center.x + newRx, top: center.y }); rN.setCoords(); // ← הוסף
-                updateNodeGeometry(new fabric.Ellipse({ originX: 'center', originY: 'center', left: center.x, top: center.y, rx: newRx, ry: Math.max(1, Math.abs(bN.top - center.y)), fill: 'rgba(255,255,255,0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'ellipse' }));
-            });
-            const bN = makeNode(center.x, center.y + ry, (c) => {
-                const newRy = Math.max(1, Math.abs(c.top - center.y));
-                tN.set({ left: center.x, top: center.y - newRy }); tN.setCoords(); // ← הוסף
-                updateNodeGeometry(new fabric.Ellipse({ originX: 'center', originY: 'center', left: center.x, top: center.y, rx: Math.max(1, Math.abs(rN.left - center.x)), ry: newRy, fill: 'rgba(255,255,255,0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'ellipse' }));
-            });
-            const tN = makeNode(center.x, center.y - ry, (c) => {
-                const newRy = Math.max(1, Math.abs(c.top - center.y));
-                bN.set({ left: center.x, top: center.y + newRy }); bN.setCoords(); // ← הוסף
-                updateNodeGeometry(new fabric.Ellipse({ originX: 'center', originY: 'center', left: center.x, top: center.y, rx: Math.max(1, Math.abs(rN.left - center.x)), ry: newRy, fill: 'rgba(255,255,255,0.01)', stroke: color, strokeWidth: getStrokeWidth(), customType: 'ellipse' }));
+                tlN.set({ left: Math.min(c.left, trN.left), top: Math.min(c.top, trN.top) }); tlN.setCoords();
+                brN.set({ left: Math.max(c.left, trN.left), top: Math.max(c.top, trN.top) }); brN.setCoords();
+                updateNodeGeometry(new fabric.Rect({ originX: 'left', originY: 'top', left: nL, top: nT, width: Math.abs(trN.left - c.left), height: Math.abs(c.top - trN.top), fill: obj.fill, stroke: color, strokeWidth: obj.strokeWidth, customType: 'rect' }));
             });
         }
-        fCanvas.current.requestRenderAll(); s.isEnteringNodeEdit = false; 
+        // 3. אליפסות
+        else if (obj.customType === 'ellipse') {
+            const center = obj.getPointByOrigin('center', 'center'); const rx = obj.rx * obj.scaleX; const ry = obj.ry * obj.scaleY;
+            const rN = makeNode(center.x + rx, center.y, (c) => {
+                const newRx = Math.max(1, Math.abs(c.left - center.x)); lN.set({ left: center.x - newRx, top: center.y }); lN.setCoords();
+                updateNodeGeometry(new fabric.Ellipse({ originX: 'center', originY: 'center', left: center.x, top: center.y, rx: newRx, ry: Math.max(1, Math.abs(bN.top - center.y)), fill: obj.fill, stroke: color, strokeWidth: obj.strokeWidth, customType: 'ellipse' }));
+            });
+            const lN = makeNode(center.x - rx, center.y, (c) => {
+                const newRx = Math.max(1, Math.abs(c.left - center.x)); rN.set({ left: center.x + newRx, top: center.y }); rN.setCoords();
+                updateNodeGeometry(new fabric.Ellipse({ originX: 'center', originY: 'center', left: center.x, top: center.y, rx: newRx, ry: Math.max(1, Math.abs(bN.top - center.y)), fill: obj.fill, stroke: color, strokeWidth: obj.strokeWidth, customType: 'ellipse' }));
+            });
+            const bN = makeNode(center.x, center.y + ry, (c) => {
+                const newRy = Math.max(1, Math.abs(c.top - center.y)); tN.set({ left: center.x, top: center.y - newRy }); tN.setCoords();
+                updateNodeGeometry(new fabric.Ellipse({ originX: 'center', originY: 'center', left: center.x, top: center.y, rx: Math.max(1, Math.abs(rN.left - center.x)), ry: newRy, fill: obj.fill, stroke: color, strokeWidth: obj.strokeWidth, customType: 'ellipse' }));
+            });
+            const tN = makeNode(center.x, center.y - ry, (c) => {
+                const newRy = Math.max(1, Math.abs(c.top - center.y)); bN.set({ left: center.x, top: center.y + newRy }); bN.setCoords();
+                updateNodeGeometry(new fabric.Ellipse({ originX: 'center', originY: 'center', left: center.x, top: center.y, rx: Math.max(1, Math.abs(rN.left - center.x)), ry: newRy, fill: obj.fill, stroke: color, strokeWidth: obj.strokeWidth, customType: 'ellipse' }));
+            });
+        }
+        // 4. פרבולות
+        else if (obj.customType === 'curve' && obj.path) {
+            const pStart = getAbs({x: obj.path[0][1], y: obj.path[0][2]}); 
+            const pCp = getAbs({x: obj.path[1][1], y: obj.path[1][2]}); 
+            const pEnd = getAbs({x: obj.path[1][3], y: obj.path[1][4]});
+            
+            const sN = makeNode(pStart.x, pStart.y, (c) => updateNodeGeometry(buildCurve({x: c.left, y: c.top}, {x: cpN.left, y: cpN.top}, {x: eN.left, y: eN.top}, color)));
+            const cpN = makeNode(pCp.x, pCp.y, (c) => updateNodeGeometry(buildCurve({x: sN.left, y: sN.top}, {x: c.left, y: c.top}, {x: eN.left, y: eN.top}, color)));
+            const eN = makeNode(pEnd.x, pEnd.y, (c) => updateNodeGeometry(buildCurve({x: sN.left, y: sN.top}, {x: cpN.left, y: cpN.top}, {x: c.left, y: c.top}, color)));
+        }
+        // 5. חצים
+        else if (obj.customType === 'arrow' && obj.path) {
+            const pStart = getAbs({x: obj.path[0][1], y: obj.path[0][2]}); 
+            const pEnd = getAbs({x: obj.path[1][1], y: obj.path[1][2]});
+            
+            const sN = makeNode(pStart.x, pStart.y, (c) => updateNodeGeometry(buildArrow({x: c.left, y: c.top}, {x: eN.left, y: eN.top}, color)));
+            const eN = makeNode(pEnd.x, pEnd.y, (c) => updateNodeGeometry(buildArrow({x: sN.left, y: sN.top}, {x: c.left, y: c.top}, color)));
+        }
+        // 6. קווים
+        else if (obj.customType === 'line') {
+            const pts = obj.calcLinePoints(); 
+            const p1 = fabric.util.transformPoint({ x: pts.x1, y: pts.y1 }, m); 
+            const p2 = fabric.util.transformPoint({ x: pts.x2, y: pts.y2 }, m);
+            
+            const sN = makeNode(p1.x, p1.y, (c) => updateNodeGeometry(buildLine({x: c.left, y: c.top}, {x: eN.left, y: eN.top}, color)));
+            const eN = makeNode(p2.x, p2.y, (c) => updateNodeGeometry(buildLine({x: sN.left, y: sN.top}, {x: c.left, y: c.top}, color)));
+        }
+
+        fCanvas.current.requestRenderAll(); 
+        s.isEnteringNodeEdit = false; 
     };
 
     const updateNodeGeometry = (newObj) => {
         const obj = s.editingOriginalObj; const index = fCanvas.current.getObjects().indexOf(obj);
-        fCanvas.current.remove(obj); newObj.set({ selectable: false, evented: false, hasControls: false, opacity: 0.5 }); fCanvas.current.add(newObj);
+        fCanvas.current.remove(obj); 
+        
+        bindShapeEvents(newObj); // חיבור מחדש של אירועי הגרירה לצורה החדשה!
+        
+        fCanvas.current.add(newObj);
         if (index > -1 && typeof fCanvas.current.moveTo === 'function') fCanvas.current.moveTo(newObj, index);
         else if (index > -1 && typeof newObj.moveTo === 'function') newObj.moveTo(index);
         s.editingOriginalObj = newObj;
@@ -757,7 +844,21 @@ const restore = (state) => {
         updateGlobalFontSize: (delta) => { if (s.activeBox) { let currentSize = parseFloat(s.activeBox.style.fontSize) || 48; s.activeBox.style.fontSize = Math.max(16, currentSize + delta) + 'px'; saveState(); } },
         addGrid: (cols, rows) => { const center = getCenterPos(); const grid = createGridGroup(cols, rows, drawColorRef.current); grid.set({ left: center.x, top: center.y, originX: 'center', originY: 'center' }); fCanvas.current.add(grid); fCanvas.current.setActiveObject(grid); setMode('select'); fCanvas.current.requestRenderAll(); saveState(); },
         addImage: (dataUrl) => { const imgEl = new Image(); imgEl.onload = () => { const center = getCenterPos(); const fabricImg = new fabric.Image(imgEl); fabricImg.scaleToWidth(400); fabricImg.set({ left: center.x, top: center.y, originX: 'center', originY: 'center' }); fCanvas.current.add(fabricImg); fCanvas.current.setActiveObject(fabricImg); setMode('select'); fCanvas.current.requestRenderAll(); saveState(); }; imgEl.src = dataUrl; },
-        addShape: (type) => { const center = getCenterPos(); const obj = createShape(type, drawColorRef.current, center); if (obj) { fCanvas.current.add(obj); fCanvas.current.setActiveObject(obj); setMode('select'); fCanvas.current.requestRenderAll(); saveState(); } }
+    
+        addShape: (type) => { 
+                const center = getCenterPos(); 
+                const obj = createShape(type, drawColorRef.current, center, getStrokeWidth()); 
+                
+                if (obj) { 
+                    fCanvas.current.add(obj); 
+                    setMode('select'); 
+                    s.wasAutoSelected = true; 
+                    saveState(); 
+
+                    // מפעיל את העיגולים הכחולים לכל סוגי הצורות
+                    enterNodeEditMode(obj);
+                } 
+            }
     }));
 
     const deactivateBox = (shouldSave = true) => {
@@ -1027,25 +1128,64 @@ const restore = (state) => {
 
     const handleColorChange = (c) => { if (contextMenu.target) { contextMenu.target.set('stroke', c); fCanvas.current.requestRenderAll(); saveState(); }};
     const handleThicknessChange = (delta) => { if (contextMenu.target) { let w = contextMenu.target.strokeWidth || 3; contextMenu.target.set('strokeWidth', Math.max(1, w + delta)); fCanvas.current.requestRenderAll(); saveState(); }};
-    const handleCopy = () => { 
+   const handleCopy = () => { 
         if (contextMenu.target) { 
-            contextMenu.target.clone((cloned) => { s.clipboard = cloned; }); 
-            // סוגר את התפריט מיד - לא מחכה ל-clone
-            setContextMenu({ visible: false, x: 0, y: 0, target: null });
+            // מוודאים שאנחנו מעתיקים את הצורה המקורית אם היא בעריכה
+            const targetToCopy = s.editingOriginalObj || contextMenu.target;
+            
+            const processClone = (cloned) => {
+                // מחזירים לאטימות מלאה למקרה שהצורה הועתקה באמצע עריכה
+                cloned.set({ opacity: 1, selectable: true, evented: true, hasControls: true });
+                s.clipboard = cloned;
+                // סוגר את התפריט רק אחרי שההעתקה הסתיימה בהצלחה
+                setContextMenu({ visible: false, x: 0, y: 0, target: null });
+            };
+
+            // תומך ב-Fabric v6 (Promise) וב-v5 (Callback) + חובה להעתיק את תעודת הזהות!
+            const result = targetToCopy.clone(['customType']);
+            if (result && typeof result.then === 'function') {
+                result.then(processClone);
+            } else {
+                targetToCopy.clone(processClone, ['customType']);
+            }
         }
     };
-    const handlePaste = () => { 
+
+   const handlePaste = () => { 
         if (s.clipboard) { 
-            s.clipboard.clone((cloned) => { 
+            const processPaste = (cloned) => { 
                 fCanvas.current.discardActiveObject(); 
-                cloned.set({ left: cloned.left + 20, top: cloned.top + 20, evented: true }); 
+                
+                // מזיזים את ההדבקה קצת ימינה ולמטה כדי שלא תסתיר את המקור
+                cloned.set({ left: cloned.left + 30, top: cloned.top + 30, evented: true, selectable: true, opacity: 1 }); 
                 fCanvas.current.add(cloned); 
-                s.clipboard.top += 20; 
-                s.clipboard.left += 20; 
-                fCanvas.current.setActiveObject(cloned); 
+                s.clipboard.top += 30; 
+                s.clipboard.left += 30; 
+                
+                // ─── התוספת שלנו לחווית משתמש מושלמת ───
+                setMode('select'); 
+                s.wasAutoSelected = true;
+                // ─────────────────────────────────────────
+
+                // הוספת הצורה החדשה מיד עם עיגולים כחולים (אם היא תומכת בזה)
+                const smartShapes = ['rect', 'triangle', 'ellipse', 'line', 'arrow', 'curve'];
+                if (cloned.customType && smartShapes.includes(cloned.customType)) {
+                    enterNodeEditMode(cloned);
+                } else {
+                    fCanvas.current.setActiveObject(cloned);
+                }
+                
                 fCanvas.current.requestRenderAll(); 
                 saveState(); 
-            }); 
+            };
+            
+            // תמיכה ב-Promises והעתקת ה-customType גם בזמן ההדבקה
+            const result = s.clipboard.clone(['customType']);
+            if (result && typeof result.then === 'function') {
+                result.then(processPaste);
+            } else {
+                s.clipboard.clone(processPaste, ['customType']);
+            }
         } 
         setContextMenu(prev => ({...prev, visible: false})); 
     };
@@ -1197,10 +1337,30 @@ const restore = (state) => {
                 <div className="context-menu" dir="rtl" style={{ position: 'fixed', top: contextMenu.y, left: contextMenu.x, zIndex: 10000, background: 'rgba(28, 28, 30, 0.95)', backdropFilter: 'blur(20px)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px', padding: '12px', boxShadow: '0 10px 30px rgba(0,0,0,0.5)', color: 'white', display: 'flex', flexDirection: 'column', gap: '10px', minWidth: '150px' }}>
                     {contextMenu.target ? (
                         <>
-                            <div style={{fontSize: '12px', color: '#aaa', fontWeight: 'bold'}}>ערוך צורה</div>
-                            <div style={{display: 'flex', gap: '6px', justifyContent: 'center'}}>
-                                {['#f5f5f5', '#fde047', '#4ade80', '#22d3ee', '#f472b6'].map(c => <button key={c} onClick={() => handleColorChange(c)} style={{background: c, width: '22px', height: '22px', borderRadius: '50%', border: 'none', cursor: 'pointer'}} /> )}
+                          <div style={{fontSize: '12px', color: '#aaa', fontWeight: 'bold'}}>ערוך צורה</div>
+                            
+                            <div style={{display: 'flex', gap: '6px', justifyContent: 'center', alignItems: 'center'}}>
+                                {['#f5f5f5', '#fde047', '#4ade80', '#22d3ee', '#f472b6'].map(c => (
+                                    <button key={c} onClick={() => handleColorChange(c)} style={{background: c, width: '22px', height: '22px', borderRadius: '50%', border: 'none', cursor: 'pointer'}} /> 
+                                ))}
+                                
+                                {/* ── פלטת צבעים מותאמת אישית ── */}
+                                <label title="צבע מותאם אישית" style={{ position: 'relative', cursor: 'pointer' }}>
+                                    <div style={{
+                                        width: '22px', height: '22px', borderRadius: '50%',
+                                        background: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)',
+                                        border: '1px solid rgba(255,255,255,0.3)',
+                                        display: 'flex', alignItems: 'center', justifyContent: 'center'
+                                    }} />
+                                    <input 
+                                        type="color" 
+                                        value={contextMenu.target?.stroke || '#ffffff'} 
+                                        onChange={e => handleColorChange(e.target.value)} 
+                                        style={{ position: 'absolute', opacity: 0, inset: 0, cursor: 'pointer', width: '100%', height: '100%' }} 
+                                    />
+                                </label>
                             </div>
+
                             <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
                                 <span style={{fontSize: '14px'}}>עובי קו:</span>
                                 <div style={{display: 'flex', gap: '4px'}}>
