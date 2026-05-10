@@ -17,7 +17,7 @@ const getPatternContrastColor = (hexColor) => {
     return luminance > 140 ? '0, 0, 0' : '255, 255, 255';
 };
 
-const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize, projectId, initialData, onAutoSave, onBack }, ref) => {
+const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize, projectId, initialData, onAutoSave, onBack, eraserSize = 20, onBoardColorChange }, ref) => {
     const fabricCanvasElRef = useRef(null);
     const drawingCanvasRef = useRef(null);
     const mathLayerRef = useRef(null);
@@ -31,6 +31,18 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize,
     const [showBoardSettings, setShowBoardSettings] = useState(false);
     const [boardSettingsPos, setBoardSettingsPos] = useState({ x: 0, y: 0 });
     const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, target: null });
+
+    // החלפה אוטומטית של צבע עט כשרקע הלוח משתנה לבהיר/כהה
+    useEffect(() => {
+        if (!onBoardColorChange) return;
+        const r = parseInt(boardColor.slice(1,3), 16) || 0;
+        const g = parseInt(boardColor.slice(3,5), 16) || 0;
+        const b = parseInt(boardColor.slice(5,7), 16) || 0;
+        const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+        // רקע בהיר → עט שחור; רקע כהה → עט לבן
+        if (luminance > 180) onBoardColorChange('#1a1a1a');
+        else if (luminance < 60) onBoardColorChange('#f5f5f5');
+    }, [boardColor]);
 
     const modeRef = useRef(mode);
     useEffect(() => { 
@@ -333,6 +345,10 @@ window.removeEventListener('pointercancel', handleGlobalPointerGone);
     if (target) {
         setContextMenu({ visible: true, x: cx, y: cy, target });
         setShowBoardSettings(false);
+    } else if (s.clipboard) {
+        // יש clipboard — מציג תפריט עם אפשרות הדבקה
+        setContextMenu({ visible: true, x: cx, y: cy, target: null });
+        setShowBoardSettings(false);
     } else {
         setBoardSettingsPos({ x: cx, y: cy });
         setShowBoardSettings(true);
@@ -361,7 +377,7 @@ window.removeEventListener('pointercancel', handleGlobalPointerGone);
         }
 
         s.drawing = false;
-        if (drawingCanvasRef.current) drawingCanvasRef.current.getContext('2d').clearRect(0, 0, window.innerWidth, window.innerHeight);
+        if (drawingCanvasRef.current) (() => { const _c = drawingCanvasRef.current; if(_c) _c.getContext("2d").clearRect(0,0,_c.width,_c.height); })();
         if (fCanvas.current) { fCanvas.current.discardActiveObject(); fCanvas.current.selection = false; }
         const pts = Array.from(s.activePointers.values());
         s.lastX = (pts[0].x + pts[1].x) / 2;
@@ -617,7 +633,41 @@ const handleViewportPointerUp = (e) => {
         s.editingOriginalObj = newObj;
     };
 
-const autosaveTimerRef = useRef(null); // שמירת מזהה הטיימר
+    const eraserSizeRef = useRef(eraserSize);
+    useEffect(() => { eraserSizeRef.current = eraserSize; }, [eraserSize]);
+    
+    const autosaveTimerRef = useRef(null);
+    
+    // Apple Pencil barrel button → מצב מחק זמני
+    const prevModeRef = useRef(null);
+    
+    useEffect(() => {
+        const handleBarrelButton = (e) => {
+            // כפתור הצד של Apple Pencil = e.button === 5 (eraser) או pointerType === 'pen' + buttons & 32
+            if (e.pointerType !== 'pen') return;
+            const isBarrelPressed = (e.buttons & 32) !== 0;
+            if (isBarrelPressed && modeRef.current !== 'erase') {
+                prevModeRef.current = modeRef.current;
+                setMode('erase');
+            }
+        };
+        const handleBarrelRelease = (e) => {
+            if (e.pointerType !== 'pen') return;
+            const isBarrelPressed = (e.buttons & 32) !== 0;
+            if (!isBarrelPressed && prevModeRef.current !== null && modeRef.current === 'erase') {
+                setMode(prevModeRef.current);
+                prevModeRef.current = null;
+            }
+        };
+        window.addEventListener('pointerdown', handleBarrelButton, { passive: true });
+        window.addEventListener('pointermove', handleBarrelButton, { passive: true });
+        window.addEventListener('pointerup', handleBarrelRelease, { passive: true });
+        return () => {
+            window.removeEventListener('pointerdown', handleBarrelButton);
+            window.removeEventListener('pointermove', handleBarrelButton);
+            window.removeEventListener('pointerup', handleBarrelRelease);
+        };
+    }, [setMode]);
 
     const saveState = () => {
         if (!fCanvas.current || s.isLocked) return;
@@ -772,7 +822,9 @@ const restore = (state) => {
         if (s.activeBox || (window.mathVirtualKeyboard && window.mathVirtualKeyboard.visible)) { deactivateBox(); return; }
         if (!e.target.closest('.context-menu') && s.editCircles.length > 0) exitNodeEditMode();
 
-        if (e.target && e.target.setPointerCapture) {
+        // setPointerCapture הכרחי כדי שpointerUp יגיע תמיד גם אם האצבע יצאה מהcanvas
+        // אבל רק ב-mouse/touch — לא ב-pen שמקבל capture אוטומטי
+        if (e.pointerType !== 'pen' && e.target && e.target.setPointerCapture) {
             try { e.target.setPointerCapture(e.pointerId); } catch(err){}
         }
 
@@ -804,7 +856,7 @@ const restore = (state) => {
             ctx.moveTo(screenX, screenY);
             ctx.lineTo(screenX, screenY + 0.01);
             
-            if (modeRef.current === 'erase') { ctx.lineWidth = 40; ctx.strokeStyle = 'rgba(255,0,0,0.3)'; } 
+            if (modeRef.current === 'erase') { ctx.lineWidth = eraserSize || 20; ctx.strokeStyle = 'rgba(255,0,0,0.3)'; } 
             else { ctx.lineWidth = 3; ctx.strokeStyle = drawColorRef.current; }
             ctx.stroke();
         }
@@ -865,17 +917,32 @@ const restore = (state) => {
         ctx.moveTo(screenX, screenY);
         
         if (modeRef.current === 'erase') {
-            const eraserRadius = 20 / zoom;
+            const actualEraserRadius = (eraserSize || 20) / zoom;
+            // מחיקת שדות מתמטיקה
             Array.from(mathLayerRef.current.children).forEach(wrapper => {
-                const boxX = parseFloat(wrapper.style.left) + wrapper.offsetWidth / 2; const boxY = parseFloat(wrapper.style.top) + wrapper.offsetHeight / 2;
-                if (Math.hypot(boxX - coords.x, boxY - coords.y) < Math.max(wrapper.offsetWidth, wrapper.offsetHeight)/2 + eraserRadius) wrapper.remove();
+                const boxX = parseFloat(wrapper.style.left) + wrapper.offsetWidth / 2;
+                const boxY = parseFloat(wrapper.style.top) + wrapper.offsetHeight / 2;
+                if (Math.hypot(boxX - coords.x, boxY - coords.y) < Math.max(wrapper.offsetWidth, wrapper.offsetHeight) / 2 + actualEraserRadius) wrapper.remove();
             });
+            // מחיקת אובייקטים של Fabric בבדיקת חיתוך אמיתית
+            const toRemove = [];
             fCanvas.current.getObjects().forEach(obj => {
-                if (obj.opacity === 0.5) return;
-                const cx = obj.left + (obj.width * obj.scaleX) / 2; const cy = obj.top + (obj.height * obj.scaleY) / 2;
-                if (Math.hypot(cx - coords.x, cy - coords.y) < eraserRadius * 2) fCanvas.current.remove(obj);
+                if (obj.opacity === 0.5) return; // עיגולי עריכה
+                // בדיקה אם נקודת המחק חוצה את אזור האובייקט (עם שוליים לפי רדיוס המחק)
+                const objBounds = obj.getBoundingRect(true);
+                const eraserLeft = coords.x - actualEraserRadius;
+                const eraserRight = coords.x + actualEraserRadius;
+                const eraserTop = coords.y - actualEraserRadius;
+                const eraserBottom = coords.y + actualEraserRadius;
+                // בדיקת חפיפת מלבנים
+                if (eraserRight >= objBounds.left && eraserLeft <= objBounds.left + objBounds.width &&
+                    eraserBottom >= objBounds.top && eraserTop <= objBounds.top + objBounds.height) {
+                    toRemove.push(obj);
+                }
             });
-            fCanvas.current.requestRenderAll(); return;
+            toRemove.forEach(obj => fCanvas.current.remove(obj));
+            if (toRemove.length > 0) fCanvas.current.requestRenderAll();
+            return;
         }
 
         // --- שטח מת למניעת שבירת הטיימר ---
@@ -893,7 +960,7 @@ const restore = (state) => {
     };
 
     const handlePointerUp = (e) => {
-        if (e && e.target && e.target.releasePointerCapture) {
+        if (e && e.pointerType !== 'pen' && e.target && e.target.releasePointerCapture) {
             try { e.target.releasePointerCapture(e.pointerId); } catch(err){}
         }
 
@@ -908,7 +975,8 @@ const restore = (state) => {
         } else if (s.drawing && !s.hasSnapped && modeRef.current === 'draw') convertToScribble();
         if (modeRef.current === 'erase') saveState();
         s.drawing = false; s.points = []; clearTimeout(s.snapTimeout);
-        drawingCanvasRef.current.getContext('2d').clearRect(0, 0, window.innerWidth, window.innerHeight);
+        const cvs = drawingCanvasRef.current;
+        if (cvs) cvs.getContext('2d').clearRect(0, 0, cvs.width, cvs.height);
     };
 
     const convertToScribble = () => {
@@ -951,7 +1019,7 @@ const restore = (state) => {
                 saveState(); 
                 enterNodeEditMode(objToAdd); // פותח עיגולים במקום מסגרת לבנה
             }
-            drawingCanvasRef.current.getContext('2d').clearRect(0, 0, window.innerWidth, window.innerHeight); 
+            (() => { const _c = drawingCanvasRef.current; if(_c) _c.getContext("2d").clearRect(0,0,_c.width,_c.height); })(); 
             fCanvas.current.requestRenderAll(); 
             s.points = []; 
         }
@@ -959,8 +1027,28 @@ const restore = (state) => {
 
     const handleColorChange = (c) => { if (contextMenu.target) { contextMenu.target.set('stroke', c); fCanvas.current.requestRenderAll(); saveState(); }};
     const handleThicknessChange = (delta) => { if (contextMenu.target) { let w = contextMenu.target.strokeWidth || 3; contextMenu.target.set('strokeWidth', Math.max(1, w + delta)); fCanvas.current.requestRenderAll(); saveState(); }};
-    const handleCopy = () => { if (contextMenu.target) { contextMenu.target.clone((cloned) => { s.clipboard = cloned; setContextMenu(prev => ({...prev, visible: false})); }); }};
-    const handlePaste = () => { if (s.clipboard) { s.clipboard.clone((cloned) => { fCanvas.current.discardActiveObject(); cloned.set({ left: cloned.left + 20, top: cloned.top + 20, evented: true }); fCanvas.current.add(cloned); s.clipboard.top += 20; s.clipboard.left += 20; fCanvas.current.setActiveObject(cloned); fCanvas.current.requestRenderAll(); saveState(); }); } setContextMenu(prev => ({...prev, visible: false})); };
+    const handleCopy = () => { 
+        if (contextMenu.target) { 
+            contextMenu.target.clone((cloned) => { s.clipboard = cloned; }); 
+            // סוגר את התפריט מיד - לא מחכה ל-clone
+            setContextMenu({ visible: false, x: 0, y: 0, target: null });
+        }
+    };
+    const handlePaste = () => { 
+        if (s.clipboard) { 
+            s.clipboard.clone((cloned) => { 
+                fCanvas.current.discardActiveObject(); 
+                cloned.set({ left: cloned.left + 20, top: cloned.top + 20, evented: true }); 
+                fCanvas.current.add(cloned); 
+                s.clipboard.top += 20; 
+                s.clipboard.left += 20; 
+                fCanvas.current.setActiveObject(cloned); 
+                fCanvas.current.requestRenderAll(); 
+                saveState(); 
+            }); 
+        } 
+        setContextMenu(prev => ({...prev, visible: false})); 
+    };
 
     const patternColorRGB = getPatternContrastColor(boardColor);
     const handleViewportPointerCancel = (e) => {
@@ -1172,9 +1260,13 @@ const restore = (state) => {
                     WebkitTouchCallout: 'none',
                     WebkitUserSelect: 'none',
                     userSelect: 'none',
+                    /* Apple Pencil תמיד יכול לצייר; אצבע רגילה רק ב-draw/erase/text */
                     pointerEvents: (mode === 'draw' || mode === 'erase' || mode === 'text') ? 'auto' : 'none' 
                 }}
-                    onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp}
+                    onPointerDown={handlePointerDown} 
+                    onPointerMove={handlePointerMove} 
+                    onPointerUp={handlePointerUp} 
+                    onPointerCancel={handlePointerUp}
                 />
                 {/* שכבת המתמטיקה מאופסת לגודל 0 כדי לא לתפוס מקום וירטואלי, האלמנטים בתוכה יקבלו מיקום מוחלט */}
                 <div id="math-layer" ref={mathLayerRef} style={{ position: 'absolute', top: 0, left: 0, width: '0px', height: '0px', overflow: 'visible', pointerEvents: 'none', zIndex: 3 }}></div>

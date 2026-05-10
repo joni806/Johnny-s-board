@@ -51,12 +51,32 @@ const Icon = ({ name, size = 20 }) => {
     }
 };
 
-export default function Toolbar({ mode, setMode, drawColor, setDrawColor, textColor, setTextColor, globalFontSize, setGlobalFontSize, boardRef, onBack }) {
-    const colors = ['#f5f5f5', '#fde047', '#4ade80', '#22d3ee', '#f472b6'];
+export default function Toolbar({ mode, setMode, drawColor, setDrawColor, textColor, setTextColor, globalFontSize, setGlobalFontSize, boardRef, onBack, eraserSize, setEraserSize }) {
+    const colors = ['#1a1a1a', '#f5f5f5', '#fde047', '#4ade80', '#22d3ee', '#f472b6'];
     const [showAddMenu, setShowAddMenu] = useState(false);
     const [showDesmos, setShowDesmos] = useState(false);
     const menuRef = useRef(null);
     const fileInputRef = useRef(null);
+    const colorPickerRef = useRef(null);
+    // --- הוסף את הבלוק הזה לכאן ---
+    const dragRef = useRef({ isDown: false, startX: 0, scrollLeft: 0 });
+
+    const handleToolbarPointerDown = (e) => {
+        dragRef.current.isDown = true;
+        dragRef.current.startX = e.pageX - e.currentTarget.offsetLeft;
+        dragRef.current.scrollLeft = e.currentTarget.scrollLeft;
+    };
+
+    const handleToolbarPointerLeave = () => { dragRef.current.isDown = false; };
+    const handleToolbarPointerUp = () => { dragRef.current.isDown = false; };
+
+    const handleToolbarPointerMove = (e) => {
+        if (!dragRef.current.isDown) return;
+        e.preventDefault();
+        const x = e.pageX - e.currentTarget.offsetLeft;
+        const walk = (x - dragRef.current.startX) * 1.5; // המכפיל קובע את מהירות הגלילה
+        e.currentTarget.scrollLeft = dragRef.current.scrollLeft - walk;
+    };
 
     const act = (fn, ...args) => boardRef.current && boardRef.current[fn](...args);
 
@@ -92,10 +112,13 @@ export default function Toolbar({ mode, setMode, drawColor, setDrawColor, textCo
         return () => { if (calcInstance) calcInstance.destroy(); };
     }, [showDesmos]);
 
-    // ─── Close add-menu on outside click ─────────────────────────────────────
+   // ─── Close add-menu on outside click ─────────────────────────────────────
     useEffect(() => {
         const handleClickOutside = (e) => {
-            if (menuRef.current && !menuRef.current.contains(e.target)) setShowAddMenu(false);
+            // הוספנו תנאי שבודק אם הלחיצה הייתה בתוך התפריט עצמו
+            if (menuRef.current && !menuRef.current.contains(e.target) && !e.target.closest('.pro-menu')) {
+                setShowAddMenu(false);
+            }
         };
         document.addEventListener('mousedown', handleClickOutside);
         return () => document.removeEventListener('mousedown', handleClickOutside);
@@ -169,14 +192,14 @@ export default function Toolbar({ mode, setMode, drawColor, setDrawColor, textCo
 
                 .pro-divider { width: 1px; height: 22px; background: rgba(255,255,255,0.1); margin: 0 2px; flex-shrink: 0; }
 
-                /* ── Add-shapes dropdown ── */
+              /* ── Add-shapes dropdown ── */
                 .pro-menu {
-                    position: absolute; top: calc(100% + 10px); left: 50%; transform: translateX(-50%);
+                    position: absolute; top: 65px; left: 50%; transform: translateX(-50%);
                     background: rgba(22,22,24,0.97); backdrop-filter: blur(24px);
                     border: 1px solid rgba(255,255,255,0.08); border-radius: 16px;
                     box-shadow: 0 20px 48px rgba(0,0,0,0.55); padding: 14px;
                     width: min(350px, 92vw); max-height: 65vh; overflow-y: auto;
-                    color: #fff; z-index: 2000;
+                    color: #fff; z-index: 9000;
                 }
                 .pro-menu-category { font-size: 11px; color: #71717a; margin: 14px 0 7px 4px; font-weight: 600; text-align: right; }
                 .shape-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 5px; }
@@ -302,79 +325,137 @@ export default function Toolbar({ mode, setMode, drawColor, setDrawColor, textCo
                     position: 'fixed', top: 16, left: '50%', transform: 'translateX(-50%)',
                     display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
                     zIndex: 1000,
-                    /* Never overflow the viewport; allow horizontal scroll as last resort */
-                    maxWidth: 'calc(100vw - 130px)', /* leave room for home + undo/redo */
+                    maxWidth: 'calc(100vw - 130px)',
                 }}
             >
-                {/* Primary row */}
-                <div className="pro-toolbar" style={{ ...glassPanel, overflowX: 'auto', maxWidth: '100%' }}>
-                    <button title="צייר"        className={`pro-btn ${mode==='draw'   ? 'active':''}`} onClick={() => { setMode('draw');   setShowAddMenu(false); }}><Icon name="draw"   /></button>
-                    <button title="מחק"         className={`pro-btn ${mode==='erase'  ? 'active':''}`} onClick={() => { setMode('erase');  setShowAddMenu(false); }}><Icon name="erase"  /></button>
-                    <button title="טקסט"        className={`pro-btn ${mode==='text'   ? 'active':''}`} onClick={() => { setMode('text');   setShowAddMenu(false); }}><Icon name="text"   /></button>
-                    <button title="בחר / ערוך" className={`pro-btn ${mode==='select' ? 'active':''}`} onClick={() => { setMode('select'); setShowAddMenu(false); }}><Icon name="select" /></button>
+             {/* Main Toolbar - ללא עטיפת גלילה, שימוש באירועים ידניים */}
+                    <div className="pro-toolbar" 
+                         onPointerDown={handleToolbarPointerDown}
+                         onPointerLeave={handleToolbarPointerLeave}
+                         onPointerUp={handleToolbarPointerUp}
+                         onPointerMove={handleToolbarPointerMove}
+                         style={{ ...glassPanel, overflowX: 'hidden', touchAction: 'none', maxWidth: '100%', width: 'max-content', cursor: 'grab' }}>
+                        
+                        <button title="צייר"        className={`pro-btn ${mode==='draw'   ? 'active':''}`} onClick={() => { setMode('draw');   setShowAddMenu(false); }}><Icon name="draw"   /></button>
+                        <button title="מחק"         className={`pro-btn ${mode==='erase'  ? 'active':''}`} onClick={() => { setMode('erase');  setShowAddMenu(false); }}><Icon name="erase"  /></button>
+                        <button title="טקסט"        className={`pro-btn ${mode==='text'   ? 'active':''}`} onClick={() => { setMode('text');   setShowAddMenu(false); }}><Icon name="text"   /></button>
+                        <button title="בחר / ערוך" className={`pro-btn ${mode==='select' ? 'active':''}`} onClick={() => { setMode('select'); setShowAddMenu(false); }}><Icon name="select" /></button>
 
-                    <div className="pro-divider" />
+                        <div className="pro-divider" />
 
-                    <button title="פתור משוואה (Ans)" className="pro-btn pro-btn-ans" onClick={() => act('solveActiveBox')}><Icon name="ans" /></button>
+                        <button title="פתור משוואה (Ans)" className="pro-btn pro-btn-ans" onClick={() => act('solveActiveBox')}><Icon name="ans" /></button>
 
-                    <div className="pro-divider" />
+                        <div className="pro-divider" />
 
-                    <button title="מחשבון גרפי (Desmos)" className="pro-btn pro-btn-desmos" onClick={() => setShowDesmos(true)}><Icon name="desmos" /></button>
+                        <button title="מחשבון גרפי (Desmos)" className="pro-btn pro-btn-desmos" onClick={() => setShowDesmos(true)}><Icon name="desmos" /></button>
 
-                    <div className="pro-divider" />
+                        <div className="pro-divider" />
 
-                    {/* Add shapes dropdown */}
-                    <div style={{ position: 'relative' }} ref={menuRef}>
-                        <button className={`pro-btn with-text ${showAddMenu ? 'active' : ''}`} onClick={() => setShowAddMenu(!showAddMenu)}>
-                            <Icon name="add" />
-                        </button>
-                        {showAddMenu && (
-                            <div className="pro-menu" dir="rtl">
-                                <div style={{ display: 'flex', gap: 7 }}>
-                                    <button className="pro-btn with-text" style={{ flex: 1, background: 'rgba(255,255,255,0.05)' }} onClick={() => fileInputRef.current.click()}><Icon name="image" size={16} /> תמונה</button>
-                                    <button className="pro-btn with-text" style={{ flex: 1, background: 'rgba(255,255,255,0.05)' }} onClick={handleAddGrid}><Icon name="grid" size={16} /> צירים</button>
-                                </div>
-                                {shapeCategories.map((cat, idx) => (
-                                    <div key={idx}>
-                                        <div className="pro-menu-category">{cat.title}</div>
-                                        <div className="shape-grid">
-                                            {cat.shapes.map(shape => (
-                                                <button key={shape} title={shape} className="shape-icon-btn" onClick={() => { act('addShape', shape); setShowAddMenu(false); }}>
-                                                    <Icon name={shape} size={18} />
-                                                </button>
-                                            ))}
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
+                        {/* כפתור הוספת הצורות - ללא התפריט הענק בתוכו */}
+                        <div style={{ position: 'relative' }} ref={menuRef}>
+                            <button className={`pro-btn with-text ${showAddMenu ? 'active' : ''}`} onClick={() => setShowAddMenu(!showAddMenu)}>
+                                <Icon name="add" />
+                            </button>
+                        </div>
+
+                        <div className="pro-divider" />
+
+                        <button title="נקה לוח" className="pro-btn pro-btn-danger" onClick={() => act('clearBoard')}><Icon name="clear" /></button>
                     </div>
 
-                    <div className="pro-divider" />
+                    {/* ── התפריט נשלף החוצה לכאן, הרחק מפס הגלילה ── */}
+                    {showAddMenu && (
+                        <div className="pro-menu" dir="rtl">
+                            <div style={{ display: 'flex', gap: 7 }}>
+                                <button className="pro-btn with-text" style={{ flex: 1, background: 'rgba(255,255,255,0.05)' }} onClick={() => fileInputRef.current.click()}><Icon name="image" size={16} /> תמונה</button>
+                                <button className="pro-btn with-text" style={{ flex: 1, background: 'rgba(255,255,255,0.05)' }} onClick={handleAddGrid}><Icon name="grid" size={16} /> צירים</button>
+                            </div>
+                            {shapeCategories.map((cat, idx) => (
+                                <div key={idx}>
+                                    <div className="pro-menu-category">{cat.title}</div>
+                                    <div className="shape-grid">
+                                        {cat.shapes.map(shape => (
+                                            <button key={shape} title={shape} className="shape-icon-btn" onClick={() => { act('addShape', shape); setShowAddMenu(false); }}>
+                                                <Icon name={shape} size={18} />
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
 
-                    <button title="נקה לוח" className="pro-btn pro-btn-danger" onClick={() => act('clearBoard')}><Icon name="clear" /></button>
-                </div>
 
-                {/* Color row (draw / text mode only) */}
-                {(mode === 'draw' || mode === 'text') && (
-                    <div className="pro-toolbar" style={{ ...glassPanel, padding: '5px 10px' }}>
-                        {colors.map(c => (
-                            <button
-                                key={c}
-                                style={{
-                                    background: c, width: 20, height: 20, borderRadius: '50%', flexShrink: 0,
-                                    border: activeColor === c ? '2px solid white' : '2px solid transparent',
-                                    boxShadow: activeColor === c ? '0 0 0 2px rgba(255,255,255,0.25)' : 'none',
-                                    cursor: 'pointer', transition: '0.18s', margin: '0 3px',
-                                }}
-                                onClick={() => handleColorChange(c)}
-                            />
-                        ))}
-                        {mode === 'text' && (
+               {/* Color row (draw / text / erase mode) */}
+                {(mode === 'draw' || mode === 'text' || mode === 'erase') && (
+                    <div className="pro-toolbar" 
+                         onPointerDown={handleToolbarPointerDown}
+                         onPointerLeave={handleToolbarPointerLeave}
+                         onPointerUp={handleToolbarPointerUp}
+                         onPointerMove={handleToolbarPointerMove}
+                         style={{ ...glassPanel, padding: '5px 10px', overflowX: 'hidden', touchAction: 'none', maxWidth: '100%', width: 'max-content', cursor: 'grab' }}>
+                        {mode === 'erase' ? (
+                            /* ── Eraser size controls ── */
                             <>
-                                <div className="pro-divider" />
-                                <button className="pro-btn" style={{ width: 'auto', padding: '0 7px', fontSize: 14, fontWeight: 700, color: '#fff' }} onClick={() => { setGlobalFontSize(prev => prev + 5); act('updateGlobalFontSize', 5); }}>A+</button>
-                                <button className="pro-btn" style={{ width: 'auto', padding: '0 7px', fontSize: 14, fontWeight: 700, color: '#fff' }} onClick={() => { setGlobalFontSize(prev => Math.max(16, prev - 5)); act('updateGlobalFontSize', -5); }}>A-</button>
+                                <span style={{ color: '#a1a1aa', fontSize: 13, fontWeight: 600, paddingRight: 4, whiteSpace: 'nowrap' }}>עובי:</span>
+                                {[10, 20, 40, 70, 110].map(sz => (
+                                    <button
+                                        key={sz}
+                                        title={`${sz}px`}
+                                        onClick={() => setEraserSize && setEraserSize(sz)}
+                                        style={{
+                                            width: 20 + sz * 0.18, height: 20 + sz * 0.18,
+                                            maxWidth: 36, maxHeight: 36,
+                                            borderRadius: '50%', flexShrink: 0,
+                                            background: eraserSize === sz ? 'rgba(239,68,68,0.7)' : 'rgba(255,255,255,0.15)',
+                                            border: eraserSize === sz ? '2px solid white' : '2px solid transparent',
+                                            cursor: 'pointer', transition: '0.18s', margin: '0 3px',
+                                        }}
+                                    />
+                                ))}
+                            </>
+                        ) : (
+                            /* ── Draw / Text color controls ── */
+                            <>
+                                {colors.map(c => (
+                                    <button
+                                        key={c}
+                                        style={{
+                                            background: c, width: 20, height: 20, borderRadius: '50%', flexShrink: 0,
+                                            border: activeColor === c ? '2px solid white' : '2px solid transparent',
+                                            boxShadow: activeColor === c ? '0 0 0 2px rgba(255,255,255,0.25)' : 'none',
+                                            cursor: 'pointer', transition: '0.18s', margin: '0 3px',
+                                        }}
+                                        onClick={() => handleColorChange(c)}
+                                    />
+                                ))}
+                                {/* Custom color picker */}
+                                <label
+                                    title="בחר צבע מותאם אישית"
+                                    style={{ position: 'relative', cursor: 'pointer', margin: '0 3px', flexShrink: 0 }}
+                                >
+                                    <div style={{
+                                        width: 22, height: 22, borderRadius: '50%',
+                                        background: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)',
+                                        border: colors.includes(activeColor) ? '2px solid transparent' : '2px solid white',
+                                        boxShadow: colors.includes(activeColor) ? 'none' : '0 0 0 2px rgba(255,255,255,0.25)',
+                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                    }} />
+                                    <input
+                                        ref={colorPickerRef}
+                                        type="color"
+                                        value={activeColor}
+                                        onChange={e => handleColorChange(e.target.value)}
+                                        style={{ position: 'absolute', opacity: 0, inset: 0, cursor: 'pointer', width: '100%', height: '100%' }}
+                                    />
+                                </label>
+                                {mode === 'text' && (
+                                    <>
+                                        <div className="pro-divider" />
+                                        <button className="pro-btn" style={{ width: 'auto', padding: '0 7px', fontSize: 14, fontWeight: 700, color: '#fff' }} onClick={() => { setGlobalFontSize(prev => prev + 5); act('updateGlobalFontSize', 5); }}>A+</button>
+                                        <button className="pro-btn" style={{ width: 'auto', padding: '0 7px', fontSize: 14, fontWeight: 700, color: '#fff' }} onClick={() => { setGlobalFontSize(prev => Math.max(16, prev - 5)); act('updateGlobalFontSize', -5); }}>A-</button>
+                                    </>
+                                )}
                             </>
                         )}
                     </div>

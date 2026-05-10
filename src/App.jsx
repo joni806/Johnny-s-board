@@ -10,6 +10,7 @@ function App() {
   const [drawColor, setDrawColor] = useState('#f5f5f5');
   const [textColor, setTextColor] = useState('#f5f5f5');
   const [globalFontSize, setGlobalFontSize] = useState(48);
+  const [eraserSize, setEraserSize] = useState(20);
   const boardRef = useRef(null);
 
   const [projects, setProjects] = useState([]);
@@ -91,6 +92,8 @@ function App() {
           projectId={currentProject.id}
           initialData={currentProject}
           onAutoSave={handleAutoSave}
+          eraserSize={eraserSize}
+          onBoardColorChange={(color) => { setDrawColor(color); setTextColor(color); }}
         />
         
         <Toolbar 
@@ -99,6 +102,7 @@ function App() {
           textColor={textColor} setTextColor={setTextColor}
           globalFontSize={globalFontSize} setGlobalFontSize={setGlobalFontSize}
           boardRef={boardRef}
+          eraserSize={eraserSize} setEraserSize={setEraserSize}
           onBack={() => { setCurrentProject(null); loadProjectsList(); }} 
         />
       </div>
