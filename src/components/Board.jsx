@@ -317,6 +317,11 @@ window.removeEventListener('pointercancel', handleGlobalPointerGone);
         }, [setMode]); // סיום ה-useEffect
 
  const handleViewportPointerDown = (e) => {
+      // ── תיקון באג Apple Pencil: אם הלחיצה היא על כפתור, קלט, label וכו' — 
+    // נניח ל-event להגיע לאלמנט בלי שנתערב
+    const uiTags = ['BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'LABEL', 'A'];
+    const isOnUI = e.target.closest('[data-ui], button, input, select, textarea, label, a');
+    if (isOnUI) return; // ← יציאה מיידית, הכפתור יקבל את ה-click רגיל
     s.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
 // לחיצה ארוכה — רק אצבע אחת
@@ -761,34 +766,59 @@ const handleViewportPointerUp = (e) => {
     
     const autosaveTimerRef = useRef(null);
     
-    // Apple Pencil barrel button → מצב מחק זמני
+ // Apple Pencil barrel button → מצב מחק זמני
     const prevModeRef = useRef(null);
     
     useEffect(() => {
-        const handleBarrelButton = (e) => {
-            // כפתור הצד של Apple Pencil = e.button === 5 (eraser) או pointerType === 'pen' + buttons & 32
+        // ב-Safari/iPadOS, כפתור הצד של Apple Pencil מגיע כ-contextmenu event
+        // עם e.pointerType === 'pen', לא כ-buttons & 32
+        const handleBarrelDown = (e) => {
             if (e.pointerType !== 'pen') return;
-            const isBarrelPressed = (e.buttons & 32) !== 0;
-            if (isBarrelPressed && modeRef.current !== 'erase') {
+            // שיטה 1: buttons & 32 (Chrome/Windows)
+            const isBarrel = (e.buttons & 32) !== 0;
+            // שיטה 2: button === 2 (Safari/iPadOS — כפתור ימני)
+            const isRightClick = e.button === 2;
+            if ((isBarrel || isRightClick) && modeRef.current !== 'erase') {
                 prevModeRef.current = modeRef.current;
                 setMode('erase');
             }
         };
-        const handleBarrelRelease = (e) => {
+
+        const handleBarrelUp = (e) => {
             if (e.pointerType !== 'pen') return;
-            const isBarrelPressed = (e.buttons & 32) !== 0;
-            if (!isBarrelPressed && prevModeRef.current !== null && modeRef.current === 'erase') {
+            const isBarrel = (e.buttons & 32) !== 0;
+            const isRightClick = e.button === 2;
+            // רק שחרר אם המחק היה פעיל ועכשיו הכפתור לא לחוץ
+            if (!isBarrel && !isRightClick && prevModeRef.current !== null && modeRef.current === 'erase') {
                 setMode(prevModeRef.current);
                 prevModeRef.current = null;
             }
         };
-        window.addEventListener('pointerdown', handleBarrelButton, { passive: true });
-        window.addEventListener('pointermove', handleBarrelButton, { passive: true });
-        window.addEventListener('pointerup', handleBarrelRelease, { passive: true });
+
+        // Safari מעלה contextmenu event כשלוחצים כפתור ימני עם עט —
+        // חייבים לחסום אותו כדי שהתפריט לא יופיע
+        const handlePenContextMenu = (e) => {
+            if (e.pointerType === 'pen') {
+                e.preventDefault();
+                e.stopPropagation();
+                // מפעילים ידנית את מצב המחק
+                if (modeRef.current !== 'erase') {
+                    prevModeRef.current = modeRef.current;
+                    setMode('erase');
+                }
+            }
+        };
+
+        window.addEventListener('pointerdown', handleBarrelDown, { passive: true });
+        window.addEventListener('pointermove', handleBarrelDown, { passive: true });
+        window.addEventListener('pointerup', handleBarrelUp, { passive: true });
+        window.addEventListener('contextmenu', handlePenContextMenu); // ← לא passive!
+
         return () => {
-            window.removeEventListener('pointerdown', handleBarrelButton);
-            window.removeEventListener('pointermove', handleBarrelButton);
-            window.removeEventListener('pointerup', handleBarrelRelease);
+            window.removeEventListener('pointerdown', handleBarrelDown);
+            window.removeEventListener('pointermove', handleBarrelDown);
+            window.removeEventListener('pointerup', handleBarrelUp);
+            window.removeEventListener('contextmenu', handlePenContextMenu);
         };
     }, [setMode]);
 
@@ -1289,11 +1319,11 @@ const restore = (state) => {
                 .cm-btn:hover { background: rgba(255,255,255,0.2); }
             `}</style>
             
-            {showBoardSettings && (
+   {showBoardSettings && (
     <>
-       <div style={{ position: 'fixed', inset: 0, zIndex: 10000 }}
+       <div data-ui style={{ position: 'fixed', inset: 0, zIndex: 10000 }}
              onPointerDown={(e) => { e.stopPropagation(); setShowBoardSettings(false); }} />
-        <div dir="rtl" style={{
+        <div data-ui dir="rtl" style={{
             position: 'fixed',
             top: Math.min(boardSettingsPos.y, window.innerHeight - 420),
             left: Math.max(10, Math.min(boardSettingsPos.x - 130, window.innerWidth - 280)),
@@ -1382,7 +1412,7 @@ const restore = (state) => {
 )}
 
 {contextMenu.visible && (
-                <div className="context-menu" dir="rtl" style={{ position: 'fixed', top: contextMenu.y, left: contextMenu.x, zIndex: 10000, background: 'rgba(28, 28, 30, 0.95)', backdropFilter: 'blur(20px)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px', padding: '12px', boxShadow: '0 10px 30px rgba(0,0,0,0.5)', color: 'white', display: 'flex', flexDirection: 'column', gap: '10px', minWidth: '150px' }}>
+                <div data-ui className="context-menu" dir="rtl" style={{ position: 'fixed', top: contextMenu.y, left: contextMenu.x, zIndex: 10000, background: 'rgba(28, 28, 30, 0.95)', backdropFilter: 'blur(20px)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px', padding: '12px', boxShadow: '0 10px 30px rgba(0,0,0,0.5)', color: 'white', display: 'flex', flexDirection: 'column', gap: '10px', minWidth: '150px' }}>
                     {contextMenu.target ? (
                         <>
                           <div style={{fontSize: '12px', color: '#aaa', fontWeight: 'bold'}}>ערוך צורה</div>
