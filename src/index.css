@@ -6,13 +6,31 @@ body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; background-c
 * { box-sizing: border-box; }
 
 /* סמנים לעכבר/עט */
-.cursor-draw { cursor: crosshair; } .cursor-text { cursor: text; } 
+.cursor-draw { cursor: crosshair; } .cursor-text { cursor: text; } .cursor-math { cursor: text; }
 .cursor-pan { cursor: grab; } .cursor-pan:active { cursor: grabbing; } 
 .cursor-select { cursor: default; } .cursor-move { cursor: move; } .cursor-erase { cursor: cell; }
 
 /* תיבות המתמטיקה */
 .math-box { position: absolute; text-shadow: 1px 1px 3px rgba(0,0,0,0.3); pointer-events: auto; padding: 5px 15px; border-radius: 8px; direction: ltr; cursor: text; transform: translate(0, -50%); border-bottom: 2px solid transparent; transition: 0.2s border; min-height: 50px; min-width: 20px; }
 .math-box.active-box { border-bottom: 2px solid rgba(74, 222, 128, 0.5); background: rgba(255, 255, 255, 0.02); }
+
+/* תיבת טקסט עברי. נפרדת ממתמטיקה, כי math-field כפוי ל-LTR
+   וכתיבת פסקה בעברית בתוכו הפכה את סדר הפיסוק וגררה את הסמן לצד הלא נכון. */
+.hebrew-box {
+  position: absolute; transform: translate(0, -50%);
+  direction: rtl; text-align: right; unicode-bidi: plaintext;
+  font-family: 'Assistant', sans-serif; font-weight: 400; line-height: 1.45;
+  background: transparent; border: none; outline: none;
+  border-bottom: 2px solid transparent; border-radius: 8px;
+  padding: 6px 12px; margin: 0; width: 100%; min-height: 1.6em;
+  overflow: hidden; resize: horizontal;
+  pointer-events: auto; cursor: text; white-space: pre-wrap; word-break: break-word;
+  text-shadow: 1px 1px 3px rgba(0,0,0,0.3); transition: 0.2s border, 0.2s background;
+}
+.hebrew-box::placeholder { color: currentColor; opacity: 0.35; }
+.hebrew-box.active-box { border-bottom: 2px solid rgba(74, 222, 128, 0.5); background: rgba(255, 255, 255, 0.03); }
+/* כשהתיבה יושבת על רקע בהיר, הסמן והבחירה עדיין נראים */
+.hebrew-box::selection { background: rgba(74, 222, 128, 0.35); }
 @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 .blinking-cursor { animation: blink 1.2s step-end infinite; font-weight: bold; }
 

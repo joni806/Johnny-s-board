@@ -53,6 +53,28 @@
   box-shadow: 0 4px 15px rgba(16, 185, 129, 0.25);
 }
 
+/* פעולה משנית בכותרת, למשל חיבור לגוגל דרייב. אותה צורה, נוכחות חלשה יותר */
+.btn-header-action {
+  background: rgba(255, 255, 255, 0.07);
+  color: #d4d4d8;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  width: 52px;
+  height: 52px;
+  border-radius: 16px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  cursor: pointer;
+  margin-inline-end: 10px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.btn-header-action:hover {
+  transform: translateY(-2px);
+  background: rgba(255, 255, 255, 0.13);
+  color: #ffffff;
+}
+
 .btn-create-new:hover {
   transform: translateY(-2px);
   background: #059669;

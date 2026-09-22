@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node tests/recognition.test.mjs && node tests/ink.test.mjs && node tests/storage.test.mjs && node tests/shapes.test.mjs",
+    "test:stress": "node tests/stress.mjs",
+    "test:e2e": "node tests/smoke.test.mjs"
   },
   "dependencies": {
     "fabric": "^7.3.1",
@@ -27,7 +30,9 @@
     "eslint": "^10.2.1",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
+    "fake-indexeddb": "^6.2.5",
     "globals": "^17.5.0",
+    "playwright": "^1.63.0",
     "vite": "^8.0.10",
     "vite-plugin-pwa": "^1.3.0"
   }

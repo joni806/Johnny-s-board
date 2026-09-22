@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
 
 const Icon = ({ name, size = 20 }) => {
     const props = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round" };
@@ -6,7 +6,12 @@ const Icon = ({ name, size = 20 }) => {
         case 'draw': return <svg {...props}><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/></svg>;
         case 'erase': return <svg {...props}><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>;
         case 'text': return <svg {...props}><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>;
+        case 'math': return <svg {...props}><path d="M4 6h5l5 12h6"/><path d="M14 6h6"/><path d="M4 18h5"/></svg>;
+        case 'drive': return <svg {...props}><path d="M17.5 19a4.5 4.5 0 0 0 .5-8.97A6 6 0 0 0 6.3 9.2 4.5 4.5 0 0 0 6.5 19z"/><path d="M12 12v6M9.5 15.5 12 18l2.5-2.5"/></svg>;
+        case 'mic': return <svg {...props}><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4M9 21h6"/></svg>;
+        case 'present': return <svg {...props}><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>;
         case 'select': return <svg {...props}><path d="m3 3 7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/><path d="m13 13 6 6"/></svg>;
+        case 'select-box': return <svg {...props}><rect x="3" y="3" width="18" height="18" rx="2" ry="2" strokeDasharray="4 4" /></svg>;
         case 'ans': return <svg {...props}><path d="M4 14l6-6 4 4 6-6"/><path d="M14 6h6v6"/><path d="M4 20h16"/></svg>;
         case 'add': return <svg {...props}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>;
         case 'clear': return <svg {...props}><path d="M3 6h18M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>;
@@ -51,10 +56,14 @@ const Icon = ({ name, size = 20 }) => {
     }
 };
 
-export default function Toolbar({ mode, setMode, drawColor, setDrawColor, textColor, setTextColor, globalFontSize, setGlobalFontSize, boardRef, onBack, eraserSize, setEraserSize }) {
+export default function Toolbar({ mode, setMode, drawColor, setDrawColor, textColor, setTextColor, setGlobalFontSize, boardRef, onBack, eraserSize, setEraserSize, onPresent, onDrive }) {
     const colors = ['#1a1a1a', '#f5f5f5', '#fde047', '#4ade80', '#22d3ee', '#f472b6'];
     const [showAddMenu, setShowAddMenu] = useState(false);
     const [showDesmos, setShowDesmos] = useState(false);
+    const [showGridModal, setShowGridModal] = useState(false);
+    const [gridCols, setGridCols] = useState('10');
+    const [gridRows, setGridRows] = useState('10');
+    const [selectionType, setSelectionType] = useState('freehand');
     const menuRef = useRef(null);
     const fileInputRef = useRef(null);
     const colorPickerRef = useRef(null);
@@ -134,16 +143,23 @@ export default function Toolbar({ mode, setMode, drawColor, setDrawColor, textCo
         setShowAddMenu(false);
     };
 
+    // חלון רגיל במקום window.prompt, שחוסם את חוט הריצה ונראה זר באפליקציה
     const handleAddGrid = () => {
-        const cols = prompt("כמה משבצות בציר X?", "10");
-        const rows = prompt("כמה משבצות בציר Y?", "10");
-        if (cols && rows) act('addGrid', parseInt(cols), parseInt(rows));
         setShowAddMenu(false);
+        setShowGridModal(true);
     };
 
-    const activeColor = mode === 'text' ? textColor : drawColor;
+    const confirmAddGrid = () => {
+        const cols = Math.max(1, Math.min(200, parseInt(gridCols, 10) || 10));
+        const rows = Math.max(1, Math.min(200, parseInt(gridRows, 10) || 10));
+        act('addGrid', cols, rows);
+        setShowGridModal(false);
+    };
+
+    const isTyping = mode === 'text' || mode === 'math';
+    const activeColor = isTyping ? textColor : drawColor;
     const handleColorChange = (c) => {
-        if (mode === 'text') setTextColor(c); else setDrawColor(c);
+        if (isTyping) setTextColor(c); else setDrawColor(c);
         act('updateActiveColor', c);
     };
 
@@ -285,6 +301,31 @@ export default function Toolbar({ mode, setMode, drawColor, setDrawColor, textCo
                 </div>
             )}
 
+            {/* ── חלון הוספת מערכת צירים ──────────────────────────────────── */}
+            {showGridModal && (
+                <div className="desmos-overlay" style={{ direction: 'rtl' }}
+                     onClick={(e) => { if (e.target === e.currentTarget) setShowGridModal(false); }}>
+                    <div dir="rtl" style={{ ...glassPanel, background: 'rgba(22,22,24,0.98)', width: 'min(330px, 92vw)', padding: 22, borderRadius: 18, color: '#fff' }}>
+                        <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 18 }}>הוספת מערכת צירים</div>
+                        {[{ key: 'x', label: 'משבצות בציר X', value: gridCols, set: setGridCols },
+                          { key: 'y', label: 'משבצות בציר Y', value: gridRows, set: setGridRows }].map((f) => (
+                            <div key={f.key} style={{ marginBottom: 14 }}>
+                                <label style={{ fontSize: 12, color: '#a1a1aa', display: 'block', marginBottom: 6 }}>{f.label}</label>
+                                <input
+                                    type="number" min="1" max="200" value={f.value}
+                                    onChange={(e) => f.set(e.target.value)}
+                                    style={{ width: '100%', padding: '9px 12px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.05)', color: '#fff', fontSize: 15, direction: 'ltr', textAlign: 'center' }}
+                                />
+                            </div>
+                        ))}
+                        <div style={{ display: 'flex', gap: 8, marginTop: 20 }}>
+                            <button onClick={() => setShowGridModal(false)} style={{ flex: 1, padding: 10, borderRadius: 10, border: 'none', background: 'rgba(255,255,255,0.07)', color: '#a1a1aa', cursor: 'pointer', fontSize: 14 }}>ביטול</button>
+                            <button onClick={confirmAddGrid} style={{ flex: 1, padding: 10, borderRadius: 10, border: 'none', background: '#4ade80', color: '#14532d', cursor: 'pointer', fontWeight: 700, fontSize: 14 }}>הוסף</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* ── Home button — top left ────────────────────────────────────── */}
             {onBack && (
                 <div style={{ position: 'fixed', top: 16, left: 16, zIndex: 1000 }}>
@@ -338,8 +379,25 @@ export default function Toolbar({ mode, setMode, drawColor, setDrawColor, textCo
                         
                         <button title="צייר"        className={`pro-btn ${mode==='draw'   ? 'active':''}`} onClick={() => { setMode('draw');   setShowAddMenu(false); }}><Icon name="draw"   /></button>
                         <button title="מחק"         className={`pro-btn ${mode==='erase'  ? 'active':''}`} onClick={() => { setMode('erase');  setShowAddMenu(false); }}><Icon name="erase"  /></button>
-                        <button title="טקסט"        className={`pro-btn ${mode==='text'   ? 'active':''}`} onClick={() => { setMode('text');   setShowAddMenu(false); }}><Icon name="text"   /></button>
-                        <button title="בחר / ערוך" className={`pro-btn ${mode==='select' ? 'active':''}`} onClick={() => { setMode('select'); setShowAddMenu(false); }}><Icon name="select" /></button>
+                        <button title="טקסט עברי"   className={`pro-btn ${mode==='text'   ? 'active':''}`} onClick={() => { setMode('text');   setShowAddMenu(false); }}><Icon name="text"   /></button>
+                        <button title="נוסחה"        className={`pro-btn ${mode==='math'   ? 'active':''}`} onClick={() => { setMode('math');   setShowAddMenu(false); }}><Icon name="math"   /></button>
+                       <button 
+                            title={selectionType === 'freehand' ? 'בחירה חופשית (לחץ שוב לבחירה מלבנית)' : 'בחירה מלבנית (לחץ שוב לבחירה חופשית)'} 
+                            className={`pro-btn ${mode === 'select' ? 'active' : ''}`} 
+                            onClick={() => {
+                                if (mode === 'select') {
+                                    const nextType = selectionType === 'freehand' ? 'box' : 'freehand';
+                                    setSelectionType(nextType);
+                                    act('setSelectionType', nextType);
+                                } else {
+                                    setMode('select');
+                                }
+                                setShowAddMenu(false);
+                            }}
+                        >
+                            <Icon name={selectionType === 'freehand' ? "select" : "select-box"} />
+                        </button>
+
 
                         <div className="pro-divider" />
 
@@ -348,6 +406,12 @@ export default function Toolbar({ mode, setMode, drawColor, setDrawColor, textCo
                         <div className="pro-divider" />
 
                         <button title="מחשבון גרפי (Desmos)" className="pro-btn pro-btn-desmos" onClick={() => setShowDesmos(true)}><Icon name="desmos" /></button>
+
+                        <div className="pro-divider" />
+
+                        <button title="מצב הצגה" className="pro-btn" onClick={() => onPresent && onPresent()}><Icon name="present" /></button>
+                        <button title="גוגל דרייב" className="pro-btn" onClick={() => onDrive && onDrive()}><Icon name="drive" /></button>
+                        <button title="הקלטה מסונכרנת" className="pro-btn" onClick={() => boardRef.current?.toggleRecorder?.()}><Icon name="mic" /></button>
 
                         <div className="pro-divider" />
 
@@ -387,7 +451,7 @@ export default function Toolbar({ mode, setMode, drawColor, setDrawColor, textCo
 
 
                {/* Color row (draw / text / erase mode) */}
-                {(mode === 'draw' || mode === 'text' || mode === 'erase') && (
+                {(mode === 'draw' || isTyping || mode === 'erase') && (
                     <div className="pro-toolbar" 
                          onPointerDown={handleToolbarPointerDown}
                          onPointerLeave={handleToolbarPointerLeave}
@@ -449,7 +513,7 @@ export default function Toolbar({ mode, setMode, drawColor, setDrawColor, textCo
                                         style={{ position: 'absolute', opacity: 0, inset: 0, cursor: 'pointer', width: '100%', height: '100%' }}
                                     />
                                 </label>
-                                {mode === 'text' && (
+                                {isTyping && (
                                     <>
                                         <div className="pro-divider" />
                                         <button className="pro-btn" style={{ width: 'auto', padding: '0 7px', fontSize: 14, fontWeight: 700, color: '#fff' }} onClick={() => { setGlobalFontSize(prev => prev + 5); act('updateGlobalFontSize', 5); }}>A+</button>

@@ -1,9 +1,17 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { get, set, keys, del } from 'idb-keyval';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import Board from './components/Board';
 import Toolbar from './components/Toolbar';
+import PresentBar from './components/PresentBar';
+import DrivePanel from './components/DrivePanel';
+import { backupProject, isConnected as driveConnected } from './utils/drive';
+import {
+  PROJECT_PREFIX, listProjects, loadProject, saveProject,
+  deleteProject as removeProject, flushWrites,
+} from './utils/storage';
 import './App.css'; // מייבא את העיצוב החדש והנקי
+
+const stamped = (project) => ({ ...project, lastModified: Date.now() });
 
 function App() {
   const [mode, setMode] = useState('draw');
@@ -11,7 +19,13 @@ function App() {
   const [textColor, setTextColor] = useState('#f5f5f5');
   const [globalFontSize, setGlobalFontSize] = useState(48);
   const [eraserSize, setEraserSize] = useState(20);
+  // מצב הצגה: מסך מלא, ממשק מוסתר וסמן לייזר במקום סרגל הכלים המלא
+  const [presenting, setPresenting] = useState(false);
+  const [showDrive, setShowDrive] = useState(false);
+  // מזהי הגיבויים בדרייב לכל לוח, כדי לעדכן קובץ קיים ולא ליצור עותקים
+  const driveFileIds = useRef({});
   const boardRef = useRef(null);
+  const currentProjectRef = useRef(null);
 
   const [projects, setProjects] = useState([]);
   const [currentProject, setCurrentProject] = useState(null);
@@ -21,61 +35,120 @@ function App() {
   const [newColor, setNewColor] = useState('#1e3d32');
   const [newPattern, setNewPattern] = useState('grid');
 
-  useEffect(() => {
-    loadProjectsList();
+  const loadProjectsList = useCallback(async () => {
+    setProjects(await listProjects());
   }, []);
 
-  const loadProjectsList = async () => {
-    const projectKeys = await keys();
-    const loadedProjects = [];
-    for (const key of projectKeys) {
-      if (key.startsWith('jb_project_')) {
-        const data = await get(key);
-        loadedProjects.push({ 
-            id: key, 
-            title: data.title, 
-            lastModified: data.lastModified, 
-            previewColor: data.bg || '#1e3d32', 
-            pattern: data.pattern || 'none' 
-        });
-      }
-    }
-    loadedProjects.sort((a, b) => b.lastModified - a.lastModified);
-    setProjects(loadedProjects);
-  };
+  useEffect(() => {
+    // הדגל מונע עדכון מצב אחרי שהרכיב כבר ירד מהמסך
+    let cancelled = false;
+    listProjects().then((list) => { if (!cancelled) setProjects(list); });
+    return () => { cancelled = true; };
+  }, []);
 
   const createNewProject = async () => {
     if (!newTitle.trim()) return;
-    const newId = `jb_project_${uuidv4()}`;
-    const newProjectData = {
+    const newId = `${PROJECT_PREFIX}${uuidv4()}`;
+    const newProjectData = stamped({
       id: newId, title: newTitle, bg: newColor, pattern: newPattern,
-      fabric: null, math: [], lastModified: Date.now()
-    };
-    await set(newId, newProjectData);
+      fabric: null, math: [], autoSnap: true,
+    });
+    await saveProject(newId, newProjectData);
     setShowNewModal(false);
+    currentProjectRef.current = newProjectData;
     setCurrentProject(newProjectData);
     loadProjectsList();
   };
 
   const openProject = async (id) => {
-    const data = await get(id);
+    const data = await loadProject(id);
+    if (!data) return;
+    currentProjectRef.current = data;
     setCurrentProject(data);
   };
 
   const deleteProject = async (id, e) => {
     e.stopPropagation();
     if (window.confirm('האם אתה בטוח שברצונך למחוק את הלוח? לא ניתן לשחזר פעולה זו.')) {
-      await del(id);
+      await removeProject(id);
       loadProjectsList();
     }
   };
 
-  const handleAutoSave = async (updatedData) => {
-    if (!currentProject) return;
-    const projectToSave = { ...currentProject, ...updatedData, lastModified: Date.now() };
-    await set(currentProject.id, projectToSave);
-    setCurrentProject(projectToSave);
+  /** גיבוי הלוח הפתוח לדרייב. מחזיר { ok } לחלונית שהפעילה אותו */
+  const backupCurrentToDrive = useCallback(async () => {
+    const project = currentProjectRef.current;
+    if (!project) return { ok: false };
+    try {
+      const file = await backupProject(project, driveFileIds.current[project.id] || null);
+      driveFileIds.current[project.id] = file.id;
+      return { ok: true };
+    } catch {
+      // מזהה ישן שנמחק בדרייב גורם לשגיאה, ולכן ננסה שוב כקובץ חדש
+      if (driveFileIds.current[project.id]) {
+        driveFileIds.current[project.id] = null;
+        try {
+          const file = await backupProject(project, null);
+          driveFileIds.current[project.id] = file.id;
+          return { ok: true };
+        } catch { return { ok: false }; }
+      }
+      return { ok: false };
+    }
+  }, []);
+
+  const enterPresenting = async () => {
+    setPresenting(true);
+    setMode('laser');
+    // מסך מלא הוא בקשה שהדפדפן רשאי לדחות, והמצב עובד גם בלעדיו
+    try { await document.documentElement.requestFullscreen?.(); } catch { /* נדחה */ }
   };
+
+  const exitPresenting = useCallback(() => {
+    setPresenting(false);
+    setMode('draw');
+    try { if (document.fullscreenElement) document.exitFullscreen?.(); } catch { /* נדחה */ }
+  }, []);
+
+  // יציאה ממסך מלא באמצעות Esc מסנכרנת גם את מצב ההצגה
+  useEffect(() => {
+    const onFullscreenChange = () => {
+      if (!document.fullscreenElement) {
+        setPresenting((was) => {
+          if (was) setMode('draw');
+          return false;
+        });
+      }
+    };
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
+  }, []);
+
+  // בסיס המיזוג מוחזק ב-ref ולא ב-state. קודם כל שמירה אוטומטית קראה
+  // ל-setCurrentProject, וכל 1.5 שניות של ציור גררו רינדור מחדש של כל הלוח.
+  const handleAutoSave = useCallback(async (updatedData) => {
+    const base = currentProjectRef.current;
+    if (!base) return null;
+    const projectToSave = stamped({ ...base, ...updatedData });
+    currentProjectRef.current = projectToSave;
+    return saveProject(base.id, projectToSave);
+  }, []);
+
+  // סגירת לוח ממתינה לסיום הכתיבות, כדי שחזרה למסך הפתיחה לא תקטע שמירה
+  const closeProject = useCallback(async () => {
+    const id = currentProjectRef.current?.id;
+    currentProjectRef.current = null;
+    setCurrentProject(null);
+    if (id) await flushWrites(id);
+    loadProjectsList();
+  }, [loadProjectsList]);
+
+  // סגירת לוח מגבה אותו לדרייב כשיש חיבור פעיל. הכישלון שקט בכוונה —
+  // גיבוי הוא תוספת, ואסור לו לחסום יציאה מלוח.
+  const closeAndBackup = useCallback(async () => {
+    if (driveConnected()) { try { await backupCurrentToDrive(); } catch { /* ננסה בפעם הבאה */ } }
+    await closeProject();
+  }, [closeProject, backupCurrentToDrive]);
 
   // --- תצוגת אזור העבודה (הלוח וסרגל הכלים) ---
   if (currentProject) {
@@ -94,17 +167,33 @@ function App() {
           onAutoSave={handleAutoSave}
           eraserSize={eraserSize}
           onBoardColorChange={(color) => { setDrawColor(color); setTextColor(color); }}
+          onOpenDrive={() => setShowDrive(true)}
         />
         
-        <Toolbar 
-          mode={mode} setMode={setMode} 
-          drawColor={drawColor} setDrawColor={setDrawColor} 
-          textColor={textColor} setTextColor={setTextColor}
-          globalFontSize={globalFontSize} setGlobalFontSize={setGlobalFontSize}
-          boardRef={boardRef}
-          eraserSize={eraserSize} setEraserSize={setEraserSize}
-          onBack={() => { setCurrentProject(null); loadProjectsList(); }} 
-        />
+        {presenting ? (
+          <PresentBar
+            mode={mode}
+            setMode={setMode}
+            onUndo={() => boardRef.current?.undo?.()}
+            onExit={exitPresenting}
+          />
+        ) : (
+          <Toolbar
+            mode={mode} setMode={setMode}
+            drawColor={drawColor} setDrawColor={setDrawColor}
+            textColor={textColor} setTextColor={setTextColor}
+            globalFontSize={globalFontSize} setGlobalFontSize={setGlobalFontSize}
+            boardRef={boardRef}
+            eraserSize={eraserSize} setEraserSize={setEraserSize}
+            onPresent={enterPresenting}
+            onDrive={() => setShowDrive(true)}
+            onBack={closeAndBackup}
+          />
+        )}
+
+        {showDrive && (
+          <DrivePanel onClose={() => setShowDrive(false)} onBackup={backupCurrentToDrive} />
+        )}
       </div>
     );
   }
@@ -114,12 +203,20 @@ function App() {
     <div className="dashboard-container">
      <header className="dashboard-header">
         <h1 className="dashboard-title">הלוחות שלי</h1>
+        <div style={{ display: 'flex', alignItems: 'center' }}>
+        <button className="btn-header-action" title="גוגל דרייב" onClick={() => setShowDrive(true)}>
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M17.5 19a4.5 4.5 0 0 0 .5-8.97A6 6 0 0 0 6.3 9.2 4.5 4.5 0 0 0 6.5 19z" />
+            <path d="M12 12v6M9.5 15.5 12 18l2.5-2.5" />
+          </svg>
+        </button>
         <button className="btn-create-new" title="צור לוח חדש" onClick={() => setShowNewModal(true)}>
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <line x1="12" y1="5" x2="12" y2="19"></line>
             <line x1="5" y1="12" x2="19" y2="12"></line>
           </svg>
         </button>
+        </div>
       </header>
 
       <div className="projects-grid">
@@ -150,6 +247,8 @@ function App() {
           עדיין אין לך לוחות. לחץ על הכפתור הירוק כדי להתחיל!
         </div>
       )}
+
+      {showDrive && <DrivePanel onClose={() => setShowDrive(false)} />}
 
       {showNewModal && (
         <div className="modal-overlay" onClick={() => setShowNewModal(false)}>
