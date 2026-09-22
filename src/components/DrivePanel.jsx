@@ -1,57 +1,46 @@
-/**
- * חלונית חיבור לגוגל דרייב.
- *
- * האפליקציה רצה כולה בדפדפן ואין לה שרת, ולכן אין מקום בטוח להחזיק בו
- * מזהה לקוח משותף. במקום זה כל משתמש יוצר מזהה משלו בקונסולת גוגל ומדביק
- * אותו כאן. כך הקבצים נשארים בחשבון שלו, והאפליקציה מבקשת הרשאה לקבצים
- * שהיא עצמה יצרה בלבד.
- */
 import { useEffect, useState } from 'react';
 import {
-    getClientId, setClientId, connect, disconnect, getStatus, onDriveChange,
+    setClientId, connect, disconnect, getStatus, onDriveChange,
 } from '../utils/drive';
 
-const STEPS = [
-    'היכנס אל console.cloud.google.com ופתח פרויקט חדש',
-    'בתפריט APIs & Services הפעל את Google Drive API',
-    'במסך OAuth consent screen בחר External, מלא שם ואימייל, והוסף את עצמך תחת Test users',
-    'ב-Credentials צור OAuth client ID מסוג Web application',
-    'תחת Authorized JavaScript origins הוסף את http://localhost:5173 ואת הכתובת שבה האפליקציה מתארחת',
-    'העתק את ה-Client ID והדבק אותו כאן',
-];
+// פה אתה מדביק את ה-Client ID שלך בתוך המרכאות!
+const MY_CLIENT_ID = "506884770834-873shlqn1tk1c9qa594h5ngdh918l38r.apps.googleusercontent.com";
 
 const DrivePanel = ({ onClose, onBackup, backupLabel }) => {
-    const [clientId, setValue] = useState(getClientId());
     const [status, setStatus] = useState(getStatus());
     const [busy, setBusy] = useState(false);
     const [message, setMessage] = useState(null);
-    const [showGuide, setShowGuide] = useState(!getClientId());
 
-    useEffect(() => onDriveChange(setStatus), []);
+    useEffect(() => {
+        // המערכת מזינה את המזהה שלך אוטומטית מאחורי הקלעים
+        setClientId(MY_CLIENT_ID);
+        onDriveChange(setStatus);
+    }, []);
 
-    // Escape סוגר את החלונית, כמו בכל דיאלוג אחר באפליקציה
+    // Escape סוגר את החלונית
     useEffect(() => {
         const onKey = (e) => { if (e.key === 'Escape') onClose(); };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
     }, [onClose]);
 
-    const saveId = () => {
-        setClientId(clientId);
-        setStatus(getStatus());
-        setMessage(clientId.trim() ? 'המזהה נשמר' : 'המזהה נמחק');
-    };
-
     const doConnect = async () => {
-        setClientId(clientId);
+        setClientId(MY_CLIENT_ID); // מוודאים שהמזהה מעודכן לפני החיבור
         setBusy(true);
         setMessage(null);
+        
         const res = await connect({ interactive: true });
+        
         setBusy(false);
         setStatus(getStatus());
-        if (res.ok) { setMessage('מחובר לדרייב'); return; }
+        
+        if (res.ok) { 
+            setMessage('מחובר בהצלחה לדרייב'); 
+            return; 
+        }
+        
         const texts = {
-            'no-client-id': 'צריך להדביק Client ID קודם',
+            'no-client-id': 'ה-Client ID חסר בקוד',
             offline: 'אין חיבור לאינטרנט, או שגוגל חסומה כאן',
             timeout: 'חלון ההרשאה נסגר בלי אישור',
             denied: 'ההרשאה נדחתה',
@@ -68,16 +57,12 @@ const DrivePanel = ({ onClose, onBackup, backupLabel }) => {
         setMessage(res && res.ok ? 'הלוח גובה לדרייב' : 'הגיבוי נכשל');
     };
 
-    const box = {
-        background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)',
-        borderRadius: '10px', color: '#e4e4e7', padding: '10px 12px',
-        fontSize: '13px', width: '100%', outline: 'none', fontFamily: 'inherit',
-    };
     const action = (tone) => ({
-        border: 'none', borderRadius: '10px', padding: '10px 14px', cursor: busy ? 'default' : 'pointer',
-        fontSize: '13px', fontWeight: 600, fontFamily: 'inherit', opacity: busy ? 0.6 : 1,
+        border: 'none', borderRadius: '10px', padding: '12px 14px', cursor: busy ? 'default' : 'pointer',
+        fontSize: '14px', fontWeight: 600, fontFamily: 'inherit', opacity: busy ? 0.6 : 1,
         background: tone === 'primary' ? '#4ade80' : 'rgba(255,255,255,0.07)',
         color: tone === 'primary' ? '#14532d' : tone === 'danger' ? '#fca5a5' : '#d4d4d8',
+        transition: '0.2s', width: '100%'
     });
 
     return (
@@ -93,76 +78,56 @@ const DrivePanel = ({ onClose, onBackup, backupLabel }) => {
             <div
                 onClick={(e) => e.stopPropagation()}
                 style={{
-                    width: 'min(520px, 100%)', maxHeight: '86vh', overflowY: 'auto',
+                    width: 'min(400px, 100%)', maxHeight: '86vh', overflowY: 'auto',
                     background: 'rgba(24,24,27,0.98)', border: '1px solid rgba(255,255,255,0.1)',
-                    borderRadius: '18px', padding: '22px', color: '#e4e4e7',
+                    borderRadius: '20px', padding: '24px', color: '#e4e4e7',
                     boxShadow: '0 24px 60px rgba(0,0,0,0.55)',
                 }}
             >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                    <h2 style={{ margin: 0, fontSize: '18px' }}>גוגל דרייב</h2>
-                    <button onClick={onClose} style={{ ...action(), padding: '6px 10px' }}>סגור</button>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                    <h2 style={{ margin: 0, fontSize: '20px' }}>שמירה בענן</h2>
+                    <button onClick={onClose} style={{ ...action(), padding: '6px 10px', width: 'auto', fontSize: '13px' }}>סגור</button>
                 </div>
 
-                <p style={{ fontSize: '13px', color: '#a1a1aa', lineHeight: 1.6, margin: '0 0 16px' }}>
-                    חיבור לדרייב מאפשר לשמור הקלטות וגיבויים של הלוחות בחשבון שלך במקום בזיכרון הדפדפן.
-                    האפליקציה מבקשת הרשאה לקבצים שהיא עצמה יוצרת בלבד, ואין לה גישה לשאר הדרייב.
+                <p style={{ fontSize: '14px', color: '#a1a1aa', lineHeight: 1.6, margin: '0 0 24px' }}>
+                    התחבר עם חשבון הגוגל שלך כדי לשמור את הלוחות וההקלטות בבטחה ב-Google Drive.
                 </p>
 
-                <div style={{
-                    display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px',
-                    padding: '10px 12px', borderRadius: '10px',
-                    background: status.connected ? 'rgba(74,222,128,0.12)' : 'rgba(255,255,255,0.04)',
-                }}>
-                    <span style={{
-                        width: '9px', height: '9px', borderRadius: '50%',
-                        background: status.connected ? '#4ade80' : '#71717a',
-                    }} />
-                    <span style={{ fontSize: '13px' }}>
-                        {status.connected ? `מחובר${status.email ? ` — ${status.email}` : ''}` : 'לא מחובר'}
-                    </span>
-                </div>
-
-                <label style={{ fontSize: '12px', color: '#a1a1aa', display: 'block', marginBottom: '6px' }}>
-                    Client ID
-                </label>
-                <input
-                    value={clientId}
-                    onChange={(e) => setValue(e.target.value)}
-                    placeholder="123456789-abc.apps.googleusercontent.com"
-                    dir="ltr"
-                    style={{ ...box, marginBottom: '10px', textAlign: 'left' }}
-                />
-
-                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '14px' }}>
-                    <button disabled={busy} onClick={doConnect} style={action('primary')}>
-                        {status.connected ? 'התחבר מחדש' : 'התחבר לדרייב'}
-                    </button>
-                    <button disabled={busy} onClick={saveId} style={action()}>שמור מזהה</button>
-                    {status.connected && (
-                        <button disabled={busy} onClick={() => { disconnect(); setStatus(getStatus()); setMessage('החיבור נותק'); }} style={action('danger')}>
-                            נתק
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    {!status.connected ? (
+                        <button disabled={busy} onClick={doConnect} style={action('primary')}>
+                            התחבר עם חשבון גוגל
                         </button>
-                    )}
-                    {onBackup && status.connected && (
-                        <button disabled={busy} onClick={doBackup} style={action()}>
-                            {backupLabel || 'גבה את הלוח עכשיו'}
-                        </button>
+                    ) : (
+                        <>
+                            <div style={{
+                                display: 'flex', alignItems: 'center', gap: '10px',
+                                padding: '12px 14px', borderRadius: '10px',
+                                background: 'rgba(74,222,128,0.12)', color: '#4ade80'
+                            }}>
+                                <span style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#4ade80' }} />
+                                <span style={{ fontSize: '14px', fontWeight: 500 }}>
+                                    מחובר ({status.email})
+                                </span>
+                            </div>
+                            
+                            {onBackup && (
+                                <button disabled={busy} onClick={doBackup} style={action('primary')}>
+                                    {backupLabel || 'גבה את הלוח עכשיו'}
+                                </button>
+                            )}
+                            
+                            <button disabled={busy} onClick={() => { disconnect(); setStatus(getStatus()); setMessage('החיבור נותק'); }} style={action('danger')}>
+                                התנתק מהחשבון
+                            </button>
+                        </>
                     )}
                 </div>
 
                 {message && (
-                    <div style={{ fontSize: '13px', color: '#fde047', marginBottom: '14px' }}>{message}</div>
-                )}
-
-                <button onClick={() => setShowGuide((v) => !v)} style={{ ...action(), width: '100%' }}>
-                    {showGuide ? 'הסתר את המדריך' : 'איך משיגים Client ID'}
-                </button>
-
-                {showGuide && (
-                    <ol style={{ fontSize: '12.5px', color: '#a1a1aa', lineHeight: 1.75, paddingInlineStart: '20px', marginTop: '12px' }}>
-                        {STEPS.map((step) => <li key={step}>{step}</li>)}
-                    </ol>
+                    <div style={{ fontSize: '14px', color: '#fde047', marginTop: '16px', textAlign: 'center', fontWeight: 500 }}>
+                        {message}
+                    </div>
                 )}
             </div>
         </div>
