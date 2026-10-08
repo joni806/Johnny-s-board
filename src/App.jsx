@@ -1,10 +1,11 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import Board from './components/Board';
 import Toolbar from './components/Toolbar';
 import PresentBar from './components/PresentBar';
 import DrivePanel from './components/DrivePanel';
 import { backupProject, isConnected as driveConnected } from './utils/drive';
+import { loadPenState, savePenState, loadColor, saveColor, buildPens, inkColorOn } from './utils/pens';
 import {
   PROJECT_PREFIX, listProjects, loadProject, saveProject,
   deleteProject as removeProject, flushWrites,
@@ -13,12 +14,40 @@ import './App.css'; // מייבא את העיצוב החדש והנקי
 
 const stamped = (project) => ({ ...project, lastModified: Date.now() });
 
+const ERASER_KEY = 'pb_eraser_v1';
+const loadEraser = () => {
+  try {
+    const e = JSON.parse(localStorage.getItem(ERASER_KEY) || 'null');
+    if (e && (e.mode === 'pixel' || e.mode === 'stroke')) return { size: 16, highlighterOnly: false, ...e };
+  } catch { /* אין אחסון */ }
+  return { mode: 'pixel', size: 16, highlighterOnly: false };
+};
+
 function App() {
   const [mode, setMode] = useState('draw');
-  const [drawColor, setDrawColor] = useState('#f5f5f5');
-  const [textColor, setTextColor] = useState('#f5f5f5');
+  // העטים: עט, לורד ומדגיש תמיד, ועטים נוספים לפי בחירה. ההגדרות שמורות במכשיר
+  const [penState, setPenState] = useState(loadPenState);
+  useEffect(() => { savePenState(penState); }, [penState]);
+  // צבע אחד לכל מה שמציירים: עט, מדגיש, צורות, רכיבים, טקסט ונוסחאות
+  const [drawColor, setDrawColor] = useState(loadColor);
+  useEffect(() => { saveColor(drawColor); }, [drawColor]);
+  const pens = useMemo(() => buildPens(penState), [penState]);
+  const basePen = pens.find((p) => p.id === penState.active) || pens[0];
+  const pen = useMemo(() => ({ ...basePen, color: drawColor }), [basePen, drawColor]);
+  const setActivePenId = useCallback((id) => setPenState((s) => ({ ...s, active: id })), []);
+  const updatePen = useCallback((kind, patch) => setPenState((s) => ({ ...s, settings: { ...s.settings, [kind]: { ...(s.settings[kind] || {}), ...patch } } })), []);
+  const addExtraPen = useCallback((kind) => setPenState((s) => ({ ...s, extras: [kind], active: kind })), []);
+  const removeExtraPen = useCallback((kind) => setPenState((s) => ({ ...s, extras: s.extras.filter((k) => k !== kind), active: s.active === kind ? 'pen' : s.active })), []);
+  const [eraser, setEraser] = useState(loadEraser);
+  useEffect(() => { try { localStorage.setItem(ERASER_KEY, JSON.stringify(eraser)); } catch { /* מצב פרטי */ } }, [eraser]);
+  const [selectionType, setSelectionType] = useState('freehand');
+  const [boardColor, setBoardColor] = useState('#1e3d32');
+  const [pattern, setPattern] = useState('grid');
   const [globalFontSize, setGlobalFontSize] = useState(48);
-  const [eraserSize, setEraserSize] = useState(20);
+  /** הצבע שבו הדיו מוצג על הלוח הנוכחי — לבן הופך לשחור על לוח בהיר */
+  const shownColor = inkColorOn(drawColor, boardColor);
+  const textColor = shownColor;
+  const handleBoardColor = setBoardColor;
   // מצב הצגה: מסך מלא, ממשק מוסתר וסמן לייזר במקום סרגל הכלים המלא
   const [presenting, setPresenting] = useState(false);
   const [showDrive, setShowDrive] = useState(false);
@@ -34,6 +63,12 @@ function App() {
   const [newTitle, setNewTitle] = useState('לוח חדש');
   const [newColor, setNewColor] = useState('#1e3d32');
   const [newPattern, setNewPattern] = useState('grid');
+
+  // נקודות גישה לבדיקות הקצה־לקצה ולניפוי באגים מהקונסולה
+  useEffect(() => {
+    Object.defineProperty(window, '__pbBoard', { get: () => boardRef.current, configurable: true });
+    window.__pbSetMode = setMode;
+  }, []);
 
   const loadProjectsList = useCallback(async () => {
     setProjects(await listProjects());
@@ -159,14 +194,16 @@ function App() {
         <Board 
           ref={boardRef} 
           mode={mode} setMode={setMode}
-          drawColor={drawColor} 
+          pen={pen}
+          eraser={eraser}
+          selectionType={selectionType}
           textColor={textColor} 
           globalFontSize={globalFontSize} 
           projectId={currentProject.id}
           initialData={currentProject}
           onAutoSave={handleAutoSave}
-          eraserSize={eraserSize}
-          onBoardColorChange={(color) => { setDrawColor(color); setTextColor(color); }}
+          onBoardColorChange={handleBoardColor}
+          onPatternChange={setPattern}
           onOpenDrive={() => setShowDrive(true)}
         />
         
@@ -180,11 +217,14 @@ function App() {
         ) : (
           <Toolbar
             mode={mode} setMode={setMode}
-            drawColor={drawColor} setDrawColor={setDrawColor}
-            textColor={textColor} setTextColor={setTextColor}
-            globalFontSize={globalFontSize} setGlobalFontSize={setGlobalFontSize}
+            pens={pens} activePenId={pen.id} setActivePenId={setActivePenId}
+            updatePen={updatePen} addExtraPen={addExtraPen} removeExtraPen={removeExtraPen}
+            color={drawColor} setColor={setDrawColor} shownColor={shownColor}
+            eraser={eraser} setEraser={setEraser}
+            selectionType={selectionType} setSelectionType={setSelectionType}
+            setGlobalFontSize={setGlobalFontSize}
             boardRef={boardRef}
-            eraserSize={eraserSize} setEraserSize={setEraserSize}
+            pattern={pattern}
             onPresent={enterPresenting}
             onDrive={() => setShowDrive(true)}
             onBack={closeAndBackup}
@@ -263,7 +303,7 @@ function App() {
             <div className="form-group">
               <label className="form-label">תבנית רקע</label>
               <div className="pattern-grid">
-                {[{id: 'none', label: 'חלק'}, {id: 'grid', label: 'משובץ'}, {id: 'lines', label: 'שורות'}, {id: 'dots', label: 'נקודות'}].map(pt => (
+                {[{id: 'none', label: 'חלק'}, {id: 'grid', label: 'משובץ'}, {id: 'engineering', label: 'הנדסי'}, {id: 'lines', label: 'שורות'}, {id: 'dots', label: 'נקודות'}, {id: 'isometric', label: 'איזומטרי'}].map(pt => (
                   <button key={pt.id} className={`pattern-btn ${newPattern === pt.id ? 'active' : ''}`} onClick={() => setNewPattern(pt.id)}>
                     {pt.label}
                   </button>

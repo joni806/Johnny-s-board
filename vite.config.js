@@ -67,11 +67,19 @@ export default defineConfig({
         ]
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2,ttf,wasm}'],
+        // מנוע ה־ONNX של זיהוי כתב היד שוקל כ־20 מגה־בייט. הוא לא נכנס ל־precache,
+        // כי אז כל משתמש היה מוריד אותו בהתקנה גם אם לעולם לא ישתמש בזיהוי.
+        // במקום זה הוא נשמר במטמון בשימוש הראשון, ומשם עובד גם בלי רשת.
+        globPatterns: ['**/*.{js,mjs,css,html,ico,png,svg,woff,woff2,ttf}'],
         // התוצר כולל את מנוע החישוב ואת הפונטים, ולכן התקרה הורמה
         maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
         // הגדרות שמירה בזיכרון לספריות חיצוניות (כמו פונטים ו-MathLive)
         runtimeCaching: [
+          {
+            urlPattern: ({ url }) => url.pathname.endsWith('.wasm'),
+            handler: 'CacheFirst',
+            options: { cacheName: 'wasm-cache', expiration: { maxEntries: 6, maxAgeSeconds: 60 * 60 * 24 * 180 } }
+          },
           {
             urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
             handler: 'CacheFirst',

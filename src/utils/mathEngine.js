@@ -43,18 +43,26 @@ const ensureWorker = () => {
 };
 
 /** חישוב בחוט הראשי, רק כשאין Worker זמין */
-const solveInline = async (expr) => {
-    const { solveAsciiMath } = await import('./solveMath.js');
-    return solveAsciiMath(expr);
+const solveInline = async (expr, action, latex) => {
+    const { solveAsciiMath, runCas } = await import('./solveMath.js');
+    return action ? runCas(action, expr, latex) : solveAsciiMath(expr);
 };
 
 /**
  * פותר ביטוי ומחזיר { ok, resultLatex } או { ok: false, error }.
  * error שווה 'timeout' כשהמנוע נקטע בגלל חריגת זמן.
  */
-export const solveExpression = (expr, timeoutMs = 5000) => {
+export const solveExpression = (expr, timeoutMs = 5000) => runInWorker({ expr }, timeoutMs);
+
+/**
+ * פעולת CAS על נוסחה: פישוט, גזירה, אינטגרציה, התמרות לפלס, מטריצות.
+ * מחזיר { ok, latex } — שורה שלמה להוספה מתחת לנוסחה המקורית.
+ */
+export const runCasAction = (action, expr, latex, timeoutMs = 8000) => runInWorker({ action, expr, latex }, timeoutMs);
+
+const runInWorker = (payload, timeoutMs) => {
     const w = ensureWorker();
-    if (!w) return solveInline(expr);
+    if (!w) return solveInline(payload.expr, payload.action, payload.latex);
 
     return new Promise((resolve) => {
         const id = ++seq;
@@ -65,7 +73,7 @@ export const solveExpression = (expr, timeoutMs = 5000) => {
             resolve({ ok: false, error: 'timeout' });
         }, timeoutMs);
         pending.set(id, { resolve, timer });
-        w.postMessage({ id, expr });
+        w.postMessage({ id, ...payload });
     });
 };
 

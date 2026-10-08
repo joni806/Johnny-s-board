@@ -579,57 +579,307 @@ function snapRightTriangle(vertices, tolDeg) {
   return out;
 }
 
+/* ── פירושים חלופיים לאותה משיכה ──────────────────────────────────────
+ *
+ * הבעיה שהמנגנון הזה פותר: מי שמצייר ריבוע ביד כמעט אף פעם לא מצייר
+ * ארבע זוויות ישרות, ולכן יישור "נאמן" מחזיר מרובע עקום. מצד שני, הפיכה
+ * כפויה של כל מרובע לריבוע מונעת לצייר מקבילית או טרפז בכוונה.
+ *
+ * הפתרון: כל צורה מקבלת רשימה של פירושים, מהאידיאלי ביותר ועד "כפי
+ * שצויר", ולכל פירוש מדד סטייה. סטייה 1 פירושה "בדיוק על גבול הסבילות
+ * של רמת היישור המאוזנת". רמת היישור של המשתמש קובעת עד איזו סטייה
+ * מותר לקפוץ לפירוש האידיאלי, ושאר הפירושים נשמרים כדי שהמשתמש יוכל
+ * לעבור ביניהם בהקשה אחת אחרי הציור, או לכפות את המושלם באצבע שנייה.
+ * ───────────────────────────────────────────────────────────────────── */
+
+/** רמות היישור: עד איזו סטייה מותר לבחור בפירוש האידיאלי */
+export const SNAP_THRESHOLDS = { faithful: 0, balanced: 1, perfect: 2.3 };
+
+/** הפרש בין שני כיוונים, בלי חשיבות לסימן. 0 עד 90 מעלות */
+const lineDiffDeg = (a, b) => {
+  let d = Math.abs(a - b) % 180;
+  if (d > 90) d = 180 - d;
+  return d;
+};
+const dirDeg = (a, b) => deg(Math.atan2(b.y - a.y, b.x - a.x));
+const unit = (v) => { const l = vlen(v); return l < EPS ? { x: 1, y: 0 } : { x: v.x / l, y: v.y / l }; };
+const avgVec = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+
 /**
- * הופך מצולע גולמי לצורה נקייה: מלבן או ריבוע כשכל הזוויות ישרות, מצולע
- * משוכלל כשכל הצלעות והזוויות שוות, ומשולש ישר־זווית כשיש זווית של 90.
+ * הצמדת זווית סיבוב של צורה: קרוב לאופקי — אופקי לגמרי, קרוב לכפולה של
+ * 15 מעלות — בדיוק עליה. הזווית מנורמלת לטווח של רבע סיבוב.
  */
-function regularizePolygon(vertices, srcPts, cfg, quadRms) {
-  const k = vertices.length;
-  const angles = interiorAngles(vertices).map(deg);
-  const sides = sideLengths(vertices);
-  const meanSide = mean(sides);
-  const sideSpread = meanSide > EPS ? Math.max(...sides.map((s) => Math.abs(s - meanSide))) / meanSide : 1;
+function snapTheta(theta) {
+  let t = theta;
+  while (t > Math.PI / 4) t -= Math.PI / 2;
+  while (t <= -Math.PI / 4) t += Math.PI / 2;
+  if (Math.abs(t) < rad(10)) return 0;
+  const step = rad(15);
+  const s = Math.round(t / step) * step;
+  return Math.abs(t - s) < rad(4) ? s : t;
+}
+
+function spreadOf(values) {
+  const m = mean(values);
+  return m > EPS ? Math.max(...values.map((v) => Math.abs(v - m))) / m : 1;
+}
+
+/** ארבעה פירושים למרובע: ריבוע, מלבן, מקבילית, טרפז, וכפי שצויר */
+function quadVariants(V, src) {
+  const out = [];
+  const angles = interiorAngles(V).map(deg);
+  const c = centroidOf(V);
+
+  /* כיוון הצלע הדומיננטי — ממוצע מעגלי על פי ארבע מאחד את ארבעת הכיוונים */
+  let sx = 0, sy = 0;
+  for (let i = 0; i < 4; i++) {
+    const d = sub(V[(i + 1) % 4], V[i]);
+    const a = Math.atan2(d.y, d.x);
+    sx += Math.cos(4 * a); sy += Math.sin(4 * a);
+  }
+  const theta = snapTheta(Math.atan2(sy, sx) / 4);
+  const u = { x: Math.cos(theta), y: Math.sin(theta) };
+
+  /* רוחב וגובה כממוצע הצלעות שמקבילות לכל ציר. ממוצע ולא תיבה תוחמת,
+     כי בתיבה תוחמת מרובע עקום תמיד יוצא גדול מדי */
+  let wSum = 0, wN = 0, hSum = 0, hN = 0;
+  for (let i = 0; i < 4; i++) {
+    const d = sub(V[(i + 1) % 4], V[i]);
+    const along = Math.abs(dot(d, u));
+    const across = Math.abs(d.x * u.y - d.y * u.x);
+    if (along >= across) { wSum += along; wN++; } else { hSum += across; hN++; }
+  }
+  let width, height;
+  if (wN && hN) { width = wSum / wN; height = hSum / hN; }
+  else { const r = bestFitRect(V, theta); width = r.width; height = r.height; }
+
+  let rectDev = Math.max(...angles.map((a) => Math.abs(a - 90))) / 14;
+  /* מבחן שני, שסולח לרעידה חזקה בפינה אחת: אם מלבן כמעט לא מרע את
+     ההתאמה לנקודות שצוירו מול המרובע הגולמי, הוא בתוך הסבילות */
+  if (src && src.length > 8) {
+    const diag = boundingBox(src).diag;
+    const quadRms = polygonError(src, V, true).rms;
+    const rectRms = polygonError(src, rectVertices({ cx: c.x, cy: c.y, width, height, angle: theta }), true).rms;
+    const allowed = quadRms * 1.45 + 0.004 * diag;
+    if (allowed > EPS) rectDev = Math.min(rectDev, rectRms / allowed);
+  }
+  const long = Math.max(width, height);
+  const aspectDev = long > EPS ? (Math.abs(width - height) / long) / 0.12 : 9;
+  const side = (width + height) / 2;
+  out.push({
+    key: 'square', label: 'ריבוע', deviation: Math.max(rectDev, aspectDev),
+    shape: { type: 'rect', cx: c.x, cy: c.y, width: side, height: side, angle: theta, square: true },
+  });
+  out.push({
+    key: 'rect', label: 'מלבן', deviation: rectDev,
+    shape: { type: 'rect', cx: c.x, cy: c.y, width, height, angle: theta, square: false },
+  });
+
+  /* מקבילית: כל זוג צלעות נגדיות מקבל את הכיוון והאורך הממוצעים שלו */
+  const d0 = lineDiffDeg(dirDeg(V[0], V[1]), dirDeg(V[3], V[2]));
+  const d1 = lineDiffDeg(dirDeg(V[1], V[2]), dirDeg(V[0], V[3]));
+  const a = avgVec(sub(V[1], V[0]), sub(V[2], V[3]));
+  const b = avgVec(sub(V[3], V[0]), sub(V[2], V[1]));
+  const para = [
+    { x: c.x - a.x / 2 - b.x / 2, y: c.y - a.y / 2 - b.y / 2 },
+    { x: c.x + a.x / 2 - b.x / 2, y: c.y + a.y / 2 - b.y / 2 },
+    { x: c.x + a.x / 2 + b.x / 2, y: c.y + a.y / 2 + b.y / 2 },
+    { x: c.x - a.x / 2 + b.x / 2, y: c.y - a.y / 2 + b.y / 2 },
+  ];
+  out.push({ key: 'parallelogram', label: 'מקבילית', deviation: Math.max(d0, d1) / 10, shape: { type: 'polygon', points: para, sides: 4 } });
+
+  /* טרפז: רק הזוג הקרוב יותר להקבלה הופך למקביל, כל צלע סביב האמצע שלה */
+  const pairA = d0 <= d1;
+  const [i0, i1, j0, j1] = pairA ? [0, 1, 3, 2] : [1, 2, 0, 3];
+  const e1 = sub(V[i1], V[i0]), e2 = sub(V[j1], V[j0]);
+  const dir = unit(avgVec(unit(e1), unit(e2)));
+  const m1 = avgVec(V[i0], V[i1]), m2 = avgVec(V[j0], V[j1]);
+  const L1 = vlen(e1) / 2, L2 = vlen(e2) / 2;
+  const trap = [...V];
+  trap[i0] = { x: m1.x - dir.x * L1, y: m1.y - dir.y * L1 };
+  trap[i1] = { x: m1.x + dir.x * L1, y: m1.y + dir.y * L1 };
+  trap[j0] = { x: m2.x - dir.x * L2, y: m2.y - dir.y * L2 };
+  trap[j1] = { x: m2.x + dir.x * L2, y: m2.y + dir.y * L2 };
+  out.push({ key: 'trapezoid', label: 'טרפז', deviation: Math.min(d0, d1) / 8, shape: { type: 'polygon', points: trap, sides: 4 } });
+
+  out.push({ key: 'drawn', label: 'כפי שצויר', deviation: 0, shape: { type: 'polygon', points: V.map((p) => ({ ...p })), sides: 4 } });
+  return out;
+}
+
+/** מסובב משולש סביב קודקוד, כך שניצב קרוב לאופקי או לאנכי יתיישר בדיוק */
+function alignLegs(tri, cornerIdx) {
+  const C = tri[cornerIdx];
+  const legs = [tri[(cornerIdx + 1) % 3], tri[(cornerIdx + 2) % 3]];
+  let best = null;
+  for (const P of legs) {
+    const a = Math.atan2(P.y - C.y, P.x - C.x);
+    const s = Math.round(a / (Math.PI / 2)) * (Math.PI / 2);
+    if (Math.abs(a - s) < rad(9) && (!best || Math.abs(a - s) < Math.abs(best))) best = s - a;
+  }
+  if (best === null) return tri;
+  return tri.map((p) => { const r = rotate(sub(p, C), best); return { x: C.x + r.x, y: C.y + r.y }; });
+}
+
+/** פירושים למשולש: שווה צלעות, ישר־זווית שווה שוקיים, ישר־זווית, שווה שוקיים */
+function triangleVariants(V) {
+  const out = [];
+  const angles = interiorAngles(V).map(deg);
+  const sides = sideLengths(V);
+  const sideSpread = spreadOf(sides);
+  const angleSpread = Math.max(...angles.map((a) => Math.abs(a - 60)));
+
+  out.push({
+    key: 'equilateral', label: 'שווה צלעות', deviation: Math.max(sideSpread / 0.12, angleSpread / 10),
+    shape: { type: 'polygon', points: makeRegular(V), sides: 3, regular: true },
+  });
+
+  let bi = 0;
+  for (let i = 1; i < 3; i++) if (Math.abs(angles[i] - 90) < Math.abs(angles[bi] - 90)) bi = i;
+  const rightDev = Math.abs(angles[bi] - 90) / 10;
+  const right = alignLegs(snapRightTriangle(V, 90) || V, bi);
+  const C = right[bi], A = right[(bi + 2) % 3], B = right[(bi + 1) % 3];
+  const la = dist(C, A), lb = dist(C, B);
+  const isoLegsDev = (Math.abs(la - lb) / Math.max(la, lb, EPS)) / 0.12;
+  const L = (la + lb) / 2;
+  const ua = unit(sub(A, C)), ub = unit(sub(B, C));
+  const rightIso = new Array(3);
+  rightIso[bi] = { ...C };
+  rightIso[(bi + 2) % 3] = { x: C.x + ua.x * L, y: C.y + ua.y * L };
+  rightIso[(bi + 1) % 3] = { x: C.x + ub.x * L, y: C.y + ub.y * L };
+  out.push({
+    key: 'right-isosceles', label: 'ישר־זווית שווה שוקיים', deviation: Math.max(rightDev, isoLegsDev),
+    shape: { type: 'polygon', points: rightIso, sides: 3, rightAngle: true },
+  });
+  out.push({
+    key: 'right', label: 'ישר־זווית', deviation: rightDev,
+    shape: { type: 'polygon', points: right, sides: 3, rightAngle: true },
+  });
+
+  /* שווה שוקיים: הקודקוד שצלעותיו הכי קרובות באורכן עובר אל האנך האמצעי של הבסיס */
+  let apex = 0, isoDiff = Infinity;
+  for (let i = 0; i < 3; i++) {
+    const a = dist(V[i], V[(i + 1) % 3]), b = dist(V[i], V[(i + 2) % 3]);
+    const d = Math.abs(a - b) / Math.max(a, b, EPS);
+    if (d < isoDiff) { isoDiff = d; apex = i; }
+  }
+  const P = V[(apex + 1) % 3], Q = V[(apex + 2) % 3];
+  const M = avgVec(P, Q);
+  const base = unit(sub(Q, P));
+  const nrm = { x: -base.y, y: base.x };
+  const h = dot(sub(V[apex], M), nrm);
+  const iso = [...V];
+  iso[apex] = { x: M.x + nrm.x * h, y: M.y + nrm.y * h };
+  out.push({ key: 'isosceles', label: 'שווה שוקיים', deviation: isoDiff / 0.1, shape: { type: 'polygon', points: iso, sides: 3 } });
+
+  out.push({ key: 'drawn', label: 'כפי שצויר', deviation: 0, shape: { type: 'polygon', points: V.map((p) => ({ ...p })), sides: 3 } });
+  return out;
+}
+
+function polygonVariants(V) {
+  const k = V.length;
+  const angles = interiorAngles(V).map(deg);
   const expected = 180 - 360 / k;
+  const sideSpread = spreadOf(sideLengths(V));
   const angleSpread = Math.max(...angles.map((a) => Math.abs(a - expected)));
+  return [
+    {
+      key: 'regular', label: 'משוכלל', deviation: Math.max(sideSpread / 0.2, angleSpread / (expected * 0.2)),
+      shape: { type: 'polygon', points: makeRegular(V), sides: k, regular: true },
+    },
+    { key: 'drawn', label: 'כפי שצויר', deviation: 0, shape: { type: 'polygon', points: V.map((p) => ({ ...p })), sides: k } },
+  ];
+}
 
-  if (k === 4) {
-    /* כיוון הצלע הדומיננטי — ממוצע מעגלי על פי ארבע כדי לאחד את ארבעת הכיוונים */
-    let sx = 0, sy = 0;
-    for (let i = 0; i < 4; i++) {
-      const d = sub(vertices[(i + 1) % 4], vertices[i]);
-      const a = Math.atan2(d.y, d.x);
-      sx += Math.cos(4 * a); sy += Math.sin(4 * a);
-    }
-    let theta = Math.atan2(sy, sx) / 4;
-    if (Math.abs(theta) < rad(5)) theta = 0;
-    const rect = bestFitRect(srcPts, theta);
-    /* מלבן נבחר רק אם הוא כמעט לא מרע את ההתאמה מול המרובע הגולמי. זה
-       מדויק יותר מסף זווית קבוע, ומחזיק גם כשהיד רעדה בפינה אחת. */
-    const diag = boundingBox(srcPts).diag;
-    const rectRms = polygonError(srcPts, rectVertices(rect), true).rms;
-    if (rectRms <= quadRms * 1.45 + 0.004 * diag) {
-      const long = Math.max(rect.width, rect.height);
-      if (long > EPS && Math.abs(rect.width - rect.height) / long <= cfg.squareTol) {
-        const s = (rect.width + rect.height) / 2;
-        rect.width = s; rect.height = s;
-        return { kind: 'rect', rect, square: true };
-      }
-      return { kind: 'rect', rect, square: false };
-    }
+function ellipseVariants(e) {
+  const ratio = e.ry > EPS ? e.rx / e.ry : 9;
+  const off = Math.abs(e.angle - Math.round(e.angle / (Math.PI / 2)) * (Math.PI / 2));
+  return [
+    { key: 'circle', label: 'מעגל', deviation: (ratio - 1) / 0.15, shape: { type: 'circle', cx: e.cx, cy: e.cy, r: (e.rx + e.ry) / 2 } },
+    {
+      key: 'ellipse-aligned', label: 'אליפסה ישרה', deviation: deg(off) / 10,
+      shape: { type: 'ellipse', cx: e.cx, cy: e.cy, rx: e.rx, ry: e.ry, angle: Math.round(e.angle / (Math.PI / 2)) * (Math.PI / 2) },
+    },
+    { key: 'drawn', label: 'כפי שצויר', deviation: 0, shape: { type: 'ellipse', cx: e.cx, cy: e.cy, rx: e.rx, ry: e.ry, angle: e.angle } },
+  ];
+}
+
+/** זווית הקו מול הכפולה הקרובה של 15 מעלות, ואיפה הקצה ינחת אחרי ההצמדה */
+function lineSnap(start, end) {
+  const L = dist(start, end);
+  const a = Math.atan2(end.y - start.y, end.x - start.x);
+  const target = Math.round(a / (Math.PI / 12)) * (Math.PI / 12);
+  const cardinal = Math.abs(Math.round(target / (Math.PI / 2)) * (Math.PI / 2) - target) < 1e-6;
+  return {
+    deviation: deg(Math.abs(a - target)) / (cardinal ? 9 : 6),
+    end: { x: start.x + Math.cos(target) * L, y: start.y + Math.sin(target) * L },
+  };
+}
+
+function lineVariants(r) {
+  const start = r.rawStart || r.start, end = r.rawEnd || r.end;
+  const s = lineSnap(start, end);
+  const base = r.type === 'arrow' ? { type: 'arrow', headLength: r.headLength } : { type: 'line' };
+  return [
+    { key: 'snapped', label: 'זווית עגולה', deviation: s.deviation, shape: { ...base, start: { ...start }, end: s.end, snappedAngle: true } },
+    { key: 'drawn', label: 'כפי שצויר', deviation: 0, shape: { ...base, start: { ...start }, end: { ...end }, snappedAngle: false } },
+  ];
+}
+
+/** שרשרת קטעים: ניצבת לצירים (חוטי מעגל, גרפים), בזוויות עגולות, או כפי שצויר */
+function polylineVariants(P) {
+  let orthoDev = 0;
+  const ortho = [{ ...P[0] }];
+  for (let i = 1; i < P.length; i++) {
+    const a = dirDeg(P[i - 1], P[i]);
+    const toH = lineDiffDeg(a, 0), toV = lineDiffDeg(a, 90);
+    orthoDev = Math.max(orthoDev, Math.min(toH, toV));
+    const prev = ortho[i - 1];
+    ortho.push(toH <= toV ? { x: P[i].x, y: prev.y } : { x: prev.x, y: P[i].y });
   }
-
-  if (k === 3) {
-    if (sideSpread <= 0.12) return { kind: 'polygon', vertices: makeRegular(vertices), regular: true };
-    const right = snapRightTriangle(vertices, cfg.rightAngleTolDeg);
-    if (right) return { kind: 'polygon', vertices: right, regular: false, rightAngle: true };
-    return { kind: 'polygon', vertices, regular: false };
+  let angDev = 0;
+  const angled = [{ ...P[0] }];
+  for (let i = 1; i < P.length; i++) {
+    const s = lineSnap(P[i - 1], P[i]);
+    angDev = Math.max(angDev, s.deviation);
+    const prev = angled[i - 1];
+    angled.push({ x: prev.x + (s.end.x - P[i - 1].x), y: prev.y + (s.end.y - P[i - 1].y) });
   }
+  return [
+    { key: 'orthogonal', label: 'ניצב לצירים', deviation: orthoDev / 12, shape: { type: 'polyline', points: ortho } },
+    { key: 'angled', label: 'זוויות עגולות', deviation: angDev, shape: { type: 'polyline', points: angled } },
+    { key: 'drawn', label: 'כפי שצויר', deviation: 0, shape: { type: 'polyline', points: P.map((p) => ({ ...p })) } },
+  ];
+}
 
-  if (k >= 5 && sideSpread <= cfg.regularTol && angleSpread <= expected * cfg.regularTol) {
-    return { kind: 'polygon', vertices: makeRegular(vertices), regular: true };
+/**
+ * כל הפירושים האפשריים לתוצאת זיהוי, מהאידיאלי ביותר ועד כפי שצויר.
+ * התוצאה צריכה לשאת את הנתונים הגולמיים שלה — drawnVertices, ellipseFit
+ * או rawStart ו־rawEnd — וזה מה שמנוע הזיהוי מצרף אליה.
+ */
+export function shapeVariants(result) {
+  if (!result) return [];
+  if (result.drawnVertices) {
+    const V = result.drawnVertices;
+    if (V.length === 4) return quadVariants(V, result.srcPoints);
+    if (V.length === 3) return triangleVariants(V);
+    return polygonVariants(V);
   }
+  if (result.ellipseFit) return ellipseVariants(result.ellipseFit);
+  if (result.type === 'line' || result.type === 'arrow') return lineVariants(result);
+  if (result.type === 'polyline') return polylineVariants(result.points);
+  return [{ key: 'drawn', label: 'כפי שצויר', deviation: 0, shape: { ...result } }];
+}
 
-  return { kind: 'polygon', vertices, regular: false };
+/**
+ * בחירת הפירוש לפי רמת היישור. force מחזיר את האידיאלי ביותר בלי תנאי —
+ * זה מה שקורה כשהמשתמש מניח אצבע שנייה על המסך בזמן ההשהיה.
+ */
+export function pickVariant(variants, level = 'balanced', force = false) {
+  if (!variants || !variants.length) return -1;
+  if (force) return 0;
+  const limit = SNAP_THRESHOLDS[level] ?? SNAP_THRESHOLDS.balanced;
+  const i = variants.findIndex((v) => v.deviation <= limit + 1e-9);
+  return i < 0 ? variants.length - 1 : i;
 }
 
 /* ── חץ ───────────────────────────────────────────────────────────── */
@@ -673,6 +923,8 @@ export function detectArrow(rs, cfg) {
     confidence: clamp01(1 - shaftFit.error / 0.065) * 0.45 + 0.55,
     start: line.start,
     end: line.end,
+    rawStart: { ...rs[0] },
+    rawEnd: { ...tip },
     headLength: head,
   };
 }
@@ -771,7 +1023,7 @@ function recognizeOpen(rs, corners, total, cfg) {
       score: lf.rms / diag,
       make: () => {
         const s = snapLineAngle(lf.start, lf.end, cfg.angleSnapDeg);
-        return { type: 'line', start: s.start, end: s.end, snappedAngle: s.snapped };
+        return { type: 'line', start: s.start, end: s.end, snappedAngle: s.snapped, rawStart: { ...lf.start }, rawEnd: { ...lf.end } };
       },
     });
   }
@@ -840,26 +1092,29 @@ function recognizeClosed(rs, corners, cfg) {
   const candidates = [];
 
   const cf = fitCircle(rs);
+  const ef = fitEllipse(rs);
+  /* מעגל ואליפסה נושאים את התאמת האליפסה הגולמית, כדי שאפשר יהיה לעבור
+     אחר כך בין מעגל, אליפסה ישרה ואליפסה כפי שצוירה */
+  const ellipseFit = ef ? { cx: ef.cx, cy: ef.cy, rx: ef.rx, ry: ef.ry, angle: ef.angle } : null;
   if (cf) {
     candidates.push({
       raw: cf.rms / diag,
       score: cf.rms / diag,
-      make: () => ({ type: 'circle', cx: cf.cx, cy: cf.cy, r: cf.r }),
+      make: () => ({ type: 'circle', cx: cf.cx, cy: cf.cy, r: cf.r, ellipseFit }),
     });
   }
 
-  const ef = fitEllipse(rs);
   if (ef) {
     candidates.push({
       raw: ef.rms / diag,
       score: (ef.rms / diag) * 1.15,
       make: () => {
         if (ef.ry > EPS && ef.rx / ef.ry <= 1.12) {
-          return { type: 'circle', cx: ef.cx, cy: ef.cy, r: (ef.rx + ef.ry) / 2 };
+          return { type: 'circle', cx: ef.cx, cy: ef.cy, r: (ef.rx + ef.ry) / 2, ellipseFit };
         }
         let angle = ef.angle;
         if (Math.abs(angle) < rad(8)) angle = 0;
-        return { type: 'ellipse', cx: ef.cx, cy: ef.cy, rx: ef.rx, ry: ef.ry, angle };
+        return { type: 'ellipse', cx: ef.cx, cy: ef.cy, rx: ef.rx, ry: ef.ry, angle, ellipseFit };
       },
     });
   }
@@ -871,19 +1126,15 @@ function recognizeClosed(rs, corners, cfg) {
       candidates.push({
         raw: poly.rms / diag,
         score: (poly.rms / diag) * (1 + 0.04 * (pruned.length - 3)) + 0.0025,
-        make: () => {
-          const reg = regularizePolygon(poly.vertices, rs, cfg, poly.rms);
-          if (reg.kind === 'rect') {
-            return { type: 'rect', ...reg.rect, square: reg.square };
-          }
-          return {
-            type: 'polygon',
-            points: reg.vertices,
-            regular: !!reg.regular,
-            rightAngle: !!reg.rightAngle,
-            sides: reg.vertices.length,
-          };
-        },
+        /* המצולע יוצא כפי שצויר, רק ישר. הפיכתו לריבוע, למלבן או למשוכלל
+           נעשית בשלב הפירושים, לפי רמת היישור שהמשתמש בחר */
+        make: () => ({
+          type: 'polygon',
+          points: poly.vertices,
+          drawnVertices: poly.vertices.map((v) => ({ ...v })),
+          srcPoints: rs,
+          sides: poly.vertices.length,
+        }),
       });
     }
   }
@@ -927,9 +1178,17 @@ export function recognizeShape(rawPoints, options = {}) {
 
   if (!result) return null;
   if (result.confidence < cfg.minConfidence) return null;
-  result.closed = closed;
-  result.cornerCount = corners.length;
-  return result;
+
+  const variants = shapeVariants(result);
+  const chosen = pickVariant(variants, cfg.snapLevel || 'balanced', !!cfg.forcePerfect);
+  const shape = chosen >= 0 ? { ...variants[chosen].shape } : { ...result };
+  shape.confidence = result.confidence;
+  shape.fitError = result.fitError;
+  shape.closed = closed;
+  shape.cornerCount = corners.length;
+  shape.variants = variants;
+  shape.variantIndex = chosen;
+  return shape;
 }
 
 /* ── החלקת דיו חופשי ──────────────────────────────────────────────── */

@@ -145,60 +145,7 @@ export const createInkStroke = (options = {}) => {
         ];
     };
 
-    /**
-     * דעיכה בקצוות — הקו נכנס ויוצא דק, כמו חוד שנוגע ועוזב את הנייר.
-     * מוחלת רק בבנייה הסופית, כדי שהתצוגה החיה לא תשנה רוחב לאחור.
-     */
-    const tapered = () => {
-        const total = pts[pts.length - 1].d || 0;
-        if (total <= 0) return pts;
-        return pts.map((n) => {
-            const dStart = n.d;
-            const dEnd = total - n.d;
-            const near = Math.min(dStart, dEnd);
-            if (near >= cfg.taperLength) return n;
-            const k = cfg.taperFloor + (1 - cfg.taperFloor) * Math.pow(near / cfg.taperLength, 0.55);
-            return { ...n, h: n.h * k };
-        });
-    };
-
-    /** נורמל מוחלק לכל נקודה, מהפרש מרכזי — נותן מתאר רציף בפינות */
-    const normals = (nodes) => nodes.map((n, i) => {
-        const a = nodes[Math.max(0, i - 1)];
-        const b = nodes[Math.min(nodes.length - 1, i + 1)];
-        let dx = b.x - a.x, dy = b.y - a.y;
-        let len = Math.hypot(dx, dy);
-        if (len < 1e-6) {
-            const c = nodes[Math.min(nodes.length - 1, i + 2)] || b;
-            dx = c.x - n.x; dy = c.y - n.y; len = Math.hypot(dx, dy) || 1;
-        }
-        return { x: -dy / len, y: dx / len };
-    });
-
-    const toPathData = () => {
-        if (pts.length === 0) return '';
-        if (pts.length === 1 || (pts[pts.length - 1].d || 0) < cfg.minDist) {
-            // נקירה קצרה — נקודה עגולה, לא רצועה
-            const n = pts[0];
-            return dotPath(n.x, n.y, Math.max(minHalf, n.h * 0.9));
-        }
-
-        const nodes = tapered();
-        const nrm = normals(nodes);
-        const left = nodes.map((n, i) => ({ x: n.x + nrm[i].x * n.h, y: n.y + nrm[i].y * n.h }));
-        const right = nodes.map((n, i) => ({ x: n.x - nrm[i].x * n.h, y: n.y - nrm[i].y * n.h }));
-
-        const last = nodes[nodes.length - 1];
-        const first = nodes[0];
-        const outline = [
-            ...left,
-            ...capArc(last, nrm[nrm.length - 1], cfg.capSamples),
-            ...right.reverse(),
-            ...capArc(first, { x: -nrm[0].x, y: -nrm[0].y }, cfg.capSamples),
-        ];
-
-        return closedSmoothPath(outline);
-    };
+    const toPathData = () => outlinePath(pts, cfg, { taperStart: true, taperEnd: true, minHalf });
 
     return {
         push,
@@ -208,8 +155,91 @@ export const createInkStroke = (options = {}) => {
         get length() { return length; },
         get count() { return pts.length; },
         get isEmpty() { return pts.length === 0; },
+        /** קו האמצע של המשיכה כמערך שטוח x,y,h — נשמר עם האובייקט כדי שמחק
+         *  חלקי יוכל לחתוך את המשיכה ולבנות מחדש את שני חלקיה */
+        nodesFlat: () => flattenNodes(pts),
     };
 };
+
+/** קו אמצע כמערך שטוח ומעוגל. שלושה מספרים לנקודה, כדי לא לנפח את הקובץ */
+export const flattenNodes = (nodes) => {
+    const out = new Array(nodes.length * 3);
+    for (let i = 0; i < nodes.length; i++) {
+        out[i * 3] = rnd(nodes[i].x);
+        out[i * 3 + 1] = rnd(nodes[i].y);
+        out[i * 3 + 2] = rnd(nodes[i].h);
+    }
+    return out;
+};
+
+export const unflattenNodes = (flat) => {
+    const out = [];
+    if (!Array.isArray(flat)) return out;
+    for (let i = 0; i + 2 < flat.length; i += 3) out.push({ x: flat[i], y: flat[i + 1], h: flat[i + 2] });
+    return out;
+};
+
+/** מרחק מצטבר לאורך קו האמצע, שהדעיכה בקצוות נשענת עליו */
+const withDistances = (nodes) => {
+    let d = 0;
+    return nodes.map((n, i) => {
+        if (i > 0) d += Math.hypot(n.x - nodes[i - 1].x, n.y - nodes[i - 1].y);
+        return { ...n, d };
+    });
+};
+
+/**
+ * מתאר סגור סביב קו אמצע עם חצי־רוחב לכל נקודה.
+ * משמש גם לסיום משיכה רגילה וגם לבניית החלקים שנשארים אחרי מחק חלקי.
+ * בחלק חתוך אין דעיכה בקצה החתך — הוא נראה כמו דיו שנמחק, לא כמו עט
+ * שהורם — ולכן הדעיכה נשלטת בנפרד לכל קצה.
+ */
+export const outlinePath = (rawNodes, options = {}, ends = {}) => {
+    const cfg = { ...INK_DEFAULTS, ...options };
+    const { taperStart = true, taperEnd = true } = ends;
+    if (!rawNodes || rawNodes.length === 0) return '';
+    const nodesD = withDistances(rawNodes);
+    const total = nodesD[nodesD.length - 1].d || 0;
+    const minHalf = ends.minHalf ?? (cfg.baseWidth / 2) * cfg.minRatio;
+    if (nodesD.length === 1 || total < cfg.minDist) {
+        // נקירה קצרה — נקודה עגולה, לא רצועה
+        const n = nodesD[0];
+        return dotPath(n.x, n.y, Math.max(minHalf, n.h * 0.9));
+    }
+
+    const nodes = nodesD.map((n) => {
+        const near = Math.min(taperStart ? n.d : Infinity, taperEnd ? total - n.d : Infinity);
+        if (near >= cfg.taperLength) return n;
+        const k = cfg.taperFloor + (1 - cfg.taperFloor) * Math.pow(near / cfg.taperLength, 0.55);
+        return { ...n, h: n.h * k };
+    });
+    const nrm = normalsOf(nodes);
+    const left = nodes.map((n, i) => ({ x: n.x + nrm[i].x * n.h, y: n.y + nrm[i].y * n.h }));
+    const right = nodes.map((n, i) => ({ x: n.x - nrm[i].x * n.h, y: n.y - nrm[i].y * n.h }));
+
+    const last = nodes[nodes.length - 1];
+    const first = nodes[0];
+    const outline = [
+        ...left,
+        ...capArc(last, nrm[nrm.length - 1], cfg.capSamples),
+        ...right.reverse(),
+        ...capArc(first, { x: -nrm[0].x, y: -nrm[0].y }, cfg.capSamples),
+    ];
+    return closedSmoothPath(outline);
+};
+
+/** נורמל מוחלק לכל נקודה, מהפרש מרכזי — נותן מתאר רציף בפינות */
+const normalsOf = (nodes) => nodes.map((n, i) => {
+    const a = nodes[Math.max(0, i - 1)];
+    const b = nodes[Math.min(nodes.length - 1, i + 1)];
+    let dx = b.x - a.x, dy = b.y - a.y;
+    let len = Math.hypot(dx, dy);
+    if (len < 1e-6) {
+        const c = nodes[Math.min(nodes.length - 1, i + 2)] || b;
+        dx = c.x - n.x; dy = c.y - n.y; len = Math.hypot(dx, dy) || 1;
+    }
+    return { x: -dy / len, y: dx / len };
+});
 
 /** חצי מעגל סביב קצה המשיכה, מהצד השמאלי אל הימני */
 const capArc = (node, n, samples) => {

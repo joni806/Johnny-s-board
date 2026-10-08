@@ -15,7 +15,7 @@ import { createServer } from 'http';
 import { readFile } from 'fs/promises';
 import { extname, join, normalize } from 'path';
 
-const TYPES = { '.html':'text/html', '.js':'text/javascript', '.css':'text/css', '.json':'application/json',
+const TYPES = { '.html':'text/html', '.js':'text/javascript', '.mjs':'text/javascript', '.css':'text/css', '.json':'application/json',
                 '.png':'image/png', '.svg':'image/svg+xml', '.ico':'image/x-icon', '.webmanifest':'application/manifest+json' };
 const root = new URL('../dist/', import.meta.url).pathname;
 const server = createServer(async (req, res) => {
@@ -52,10 +52,11 @@ await page.waitForSelector('#drawing-canvas', { timeout: 5000 });
 check('הלוח נפתח', await page.locator('#drawing-canvas').isVisible());
 
 // ציור ריבוע ביד חופשית, עם רעש קל, דרך אירועי מצביע אמיתיים
-async function stroke(points) {
+async function stroke(points, hold = 0) {
   await page.mouse.move(points[0].x, points[0].y);
   await page.mouse.down();
   for (const p of points.slice(1)) await page.mouse.move(p.x, p.y);
+  if (hold) await page.waitForTimeout(hold);
   await page.mouse.up();
 }
 const square = [];
@@ -66,7 +67,7 @@ for (let i = 1; i < c.length; i++) {
                   y: c[i-1][1] + (c[i][1]-c[i-1][1])*t + (Math.random()-0.5)*3 });
   }
 }
-await stroke(square);
+await stroke(square, 700);
 await page.waitForTimeout(2600);   // ממתין לשמירה האוטומטית המושהית
 
 // קריאת מה שבאמת נשמר ב-IndexedDB — הבדיקה החזקה ביותר של כל השרשרת
@@ -98,9 +99,15 @@ check('הצורה נשמרה אטומה ולא חצי שקופה', !rect || rect
 check('הצורה נשמרה ניתנת לבחירה', !rect || rect.selectable !== false);
 if (rect) console.log(`       מלבן שנשמר: ${Math.round(rect.width)}x${Math.round(rect.height)} zoom-space`);
 
-// אחרי זיהוי האפליקציה עוברת למצב בחירה, ולכן חוזרים לכלי הציור
-await page.locator('button[title="צייר"]').click();
-check('חזרה לכלי הציור', await page.locator('button[title="צייר"]').evaluate(el => el.classList.contains('active')));
+// חזרה לכלי הציור: הקשה על העט הראשון בקלמר
+const drawMode = async () => { await page.evaluate(() => window.__pbSetMode('draw')); await page.waitForTimeout(80); };
+/** לחיצה ארוכה על מקום ריק פותחת את הגדרות הלוח, כמו שהיה תמיד */
+const openSettings = async (x, y) => {
+  await page.mouse.move(x, y); await page.mouse.down(); await page.waitForTimeout(750); await page.mouse.up();
+  await page.waitForTimeout(250);
+};
+await drawMode();
+check('חזרה לכלי הציור', await page.locator('[role=radiogroup] .pb-btn.active').count() === 1);
 
 // קשקוש חופשי חייב להישאר דיו ולא להפוך לצורה
 const scribble = [];
@@ -121,12 +128,9 @@ check('קשקוש נשמר כדיו חופשי ולא כצורה', objs2.some(o 
 
 // ── מתג ההמרה האוטומטית ──
 // לחיצה ארוכה על אזור ריק פותחת את הגדרות הלוח
-await page.locator('button[title="צייר"]').click();
-await page.mouse.move(1050, 680);
-await page.mouse.down();
-await page.waitForTimeout(750);
-await page.mouse.up();
-const toggle = page.locator('button', { hasText: 'המרה אוטומטית בהרמת העט' });
+await drawMode();
+await openSettings(1050, 680);
+const toggle = page.locator('button', { hasText: 'יישור צורה כשמשאירים את העט' });
 check('הגדרות הלוח נפתחות בלחיצה ארוכה', await toggle.isVisible());
 if (await toggle.isVisible()) {
   // נבדק במפורש שהמתג אינו מוסתר על ידי שכבת סגירת התפריט שמאחוריו
@@ -139,14 +143,14 @@ if (await toggle.isVisible()) {
   await toggle.evaluate((el) => el.click());
   await page.keyboard.press('Escape');
   await page.waitForTimeout(300);
-  await page.locator('button[title="צייר"]').click();
+  await drawMode();
   // אותו ריבוע בדיוק, הפעם עם המתג כבוי — חייב להישאר דיו
   const sq2 = [];
   const k = [[820,180],[1060,180],[1060,420],[820,420],[820,180]];
   for (let i = 1; i < k.length; i++)
     for (let t = 0; t <= 1; t += 0.05)
       sq2.push({ x: k[i-1][0] + (k[i][0]-k[i-1][0])*t, y: k[i-1][1] + (k[i][1]-k[i-1][1])*t });
-  await stroke(sq2);
+  await stroke(sq2, 700);
   await page.waitForTimeout(2400);
   const saved3 = await readProject();
   const o3 = saved3?.fabric?.objects || [];
@@ -167,7 +171,7 @@ check('נתיב הדיו סגור, כמו שמתאר צריך להיות',
       !!inkObj && Array.isArray(inkObj.path) && inkObj.path.some(seg => seg[0] === 'z' || seg[0] === 'Z'));
 
 // ── טקסט עברי RTL ──
-await page.locator('button[title="טקסט עברי"]').click();
+await page.locator('.pb-btn[aria-label^="טקסט"]').click();
 await page.mouse.click(760, 640);
 await page.waitForTimeout(250);
 const ta = page.locator('textarea.hebrew-box');
@@ -175,7 +179,8 @@ check('שדה טקסט עברי נוצר', await ta.count() === 1, 'נמצאו '
 if (await ta.count() === 1) {
   check('הכתיבה בשדה מימין לשמאל', await ta.evaluate(el => el.dir === 'rtl' || getComputedStyle(el).direction === 'rtl'));
   await ta.fill('שטף חשמלי דרך משטח סגור, לפי גאוס.');
-  await page.locator('button[title="צייר"]').click();
+  await drawMode();
+  await page.mouse.click(1200, 760);
   await page.waitForTimeout(3400);   // המתנה של 1000 מ"ש עד saveState ועוד 1500 עד הכתיבה
   const saved4 = await readProject();
   const textBox = (saved4?.math || []).find(m => m.kind === 'text');
@@ -185,10 +190,11 @@ if (await ta.count() === 1) {
 
 // ── מצב הצגה וסמן לייזר ──
 const objsBeforeLaser = ((await readProject())?.fabric?.objects || []).length;
-await page.locator('button[title="מצב הצגה"]').click();
+const moreMenu = async (label) => { await page.locator('.pb-btn[aria-label^="עוד"]').click(); await page.locator('.pb-popover button', { hasText: label }).click(); };
+await moreMenu('מצב הצגה');
 await page.waitForTimeout(400);
 check('סרגל ההצגה מוצג', await page.locator('button[title="לייזר"]').isVisible());
-check('סרגל הכלים המלא מוסתר', await page.locator('button[title="מצב הצגה"]').count() === 0);
+check('סרגל הכלים המלא מוסתר', await page.locator('.pb-dock').count() === 0);
 await stroke([{x:500,y:300},{x:560,y:330},{x:620,y:300},{x:680,y:340}]);
 await page.waitForTimeout(1600);
 const objsAfterLaser = ((await readProject())?.fabric?.objects || []).length;
@@ -196,10 +202,10 @@ check('הלייזר לא יוצר אובייקטים ולא נשמר', objsAfter
       `${objsBeforeLaser} → ${objsAfterLaser}`);
 await page.locator('button[title="צא ממצב הצגה"]').click();
 await page.waitForTimeout(400);
-check('יציאה ממצב הצגה מחזירה את סרגל הכלים', await page.locator('button[title="מצב הצגה"]').isVisible());
+check('יציאה ממצב הצגה מחזירה את סרגל הכלים', await page.locator('.pb-dock').isVisible());
 
 // ── הקלטה חסומה עד חיבור לדרייב ──
-await page.locator('button[title="הקלטה מסונכרנת"]').click();
+await moreMenu('הקלטה מסונכרנת');
 await page.waitForTimeout(300);
 check('סרגל ההקלטה נפתח', await page.locator('text=הקלטה מסונכרנת').first().isVisible());
 check('בלי דרייב מוצגת בקשת חיבור ולא כפתור הקלטה',
@@ -216,11 +222,8 @@ await page.locator('button', { hasText: 'סגור' }).first().click().catch(() =
 await page.waitForTimeout(300);
 
 // ── גרסאות קודמות ──
-await page.locator('button[title="צייר"]').click();
-await page.mouse.move(1150, 720);
-await page.mouse.down();
-await page.waitForTimeout(750);
-await page.mouse.up();
+await drawMode();
+await openSettings(1150, 720);
 const revBtn = page.locator('button', { hasText: 'הצג גרסאות שמורות' });
 check('כפתור הגרסאות קיים בהגדרות הלוח', await revBtn.isVisible());
 if (await revBtn.isVisible()) {

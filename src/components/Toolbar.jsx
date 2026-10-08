@@ -1,116 +1,188 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import Icon from './icons';
+import Popover from './Popover';
+import StemPanel from './StemPanel';
+import MathInkDownload from './MathInkDownload';
+import { getMathInkStatus, preloadMathInk, wasMathInkDownloaded } from '../utils/mathInk';
+import { PEN_KINDS, EXTRA_KINDS, COLOR_BAR } from '../utils/pens';
+import './toolbar.css';
 
-const Icon = ({ name, size = 20 }) => {
-    const props = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round" };
-    switch (name) {
-        case 'draw': return <svg {...props}><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/></svg>;
-        case 'erase': return <svg {...props}><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>;
-        case 'text': return <svg {...props}><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>;
-        case 'math': return <svg {...props}><path d="M4 6h5l5 12h6"/><path d="M14 6h6"/><path d="M4 18h5"/></svg>;
-        case 'drive': return <svg {...props}><path d="M17.5 19a4.5 4.5 0 0 0 .5-8.97A6 6 0 0 0 6.3 9.2 4.5 4.5 0 0 0 6.5 19z"/><path d="M12 12v6M9.5 15.5 12 18l2.5-2.5"/></svg>;
-        case 'mic': return <svg {...props}><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4M9 21h6"/></svg>;
-        case 'present': return <svg {...props}><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>;
-        case 'select': return <svg {...props}><path d="m3 3 7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/><path d="m13 13 6 6"/></svg>;
-        case 'select-box': return <svg {...props}><rect x="3" y="3" width="18" height="18" rx="2" ry="2" strokeDasharray="4 4" /></svg>;
-        case 'ans': return <svg {...props}><path d="M4 14l6-6 4 4 6-6"/><path d="M14 6h6v6"/><path d="M4 20h16"/></svg>;
-        case 'add': return <svg {...props}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>;
-        case 'clear': return <svg {...props}><path d="M3 6h18M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>;
-        case 'image': return <svg {...props}><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>;
-        case 'grid': return <svg {...props}><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>;
-        case 'desmos': return <svg {...props} viewBox="0 0 24 24"><path d="M4 4h16v16H4z M4 12h16 M12 4v16 M6 10l2-2l2 2 M18 10l-2-2l-2 2"/></svg>;
-        case 'home': return <svg {...props}><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>;
-        case 'undo': return <svg {...props}><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>;
-        case 'redo': return <svg {...props}><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"/></svg>;
-        case 'rect': return <svg {...props}><rect x="4" y="4" width="16" height="16" rx="2"/></svg>;
-        case 'circle': return <svg {...props}><circle cx="12" cy="12" r="8"/></svg>;
-        case 'ellipse': return <svg {...props}><ellipse cx="12" cy="12" rx="10" ry="6"/></svg>;
-        case 'half-circle': return <svg {...props}><path d="M 4 12 A 8 8 0 0 1 20 12 Z"/></svg>;
-        case 'triangle': return <svg {...props}><polygon points="12,4 20,20 4,20"/></svg>;
-        case 'right-triangle': return <svg {...props}><polygon points="4,4 4,20 20,20"/></svg>;
-        case 'diamond': return <svg {...props}><polygon points="12,4 20,12 12,20 4,12"/></svg>;
-        case 'pentagon': return <svg {...props}><polygon points="12,4 20,10 17,20 7,20 4,10"/></svg>;
-        case 'hexagon': return <svg {...props}><polygon points="12,4 20,8 20,16 12,20 4,16 4,8"/></svg>;
-        case 'heptagon': return <svg {...props}><polygon points="12,4 19,8 20,15 15,20 9,20 4,15 5,8"/></svg>;
-        case 'octagon': return <svg {...props}><polygon points="8,4 16,4 20,8 20,16 16,20 8,20 4,16 4,8"/></svg>;
-        case 'decagon': return <svg {...props}><circle cx="12" cy="12" r="8" strokeDasharray="2 2"/></svg>;
-        case 'parallelogram': return <svg {...props}><polygon points="8,6 20,6 16,18 4,18"/></svg>;
-        case 'trapezoid': return <svg {...props}><polygon points="8,6 16,6 20,18 4,18"/></svg>;
-        case 'star-4': return <svg {...props}><polygon points="12,4 14,10 20,12 14,14 12,20 10,14 4,12 10,10"/></svg>;
-        case 'star-5': return <svg {...props}><polygon points="12,4 14.5,10 21,10 16,14 18,20 12,16 6,20 8,14 3,10 9.5,10"/></svg>;
-        case 'star-6': return <svg {...props}><polygon points="12,4 14,9 20,12 14,15 12,20 10,15 4,12 10,9"/></svg>;
-        case 'arrow-right': return <svg {...props}><polygon points="4,9 12,9 12,5 20,12 12,19 12,15 4,15"/></svg>;
-        case 'arrow-left': return <svg {...props}><polygon points="20,9 12,9 12,5 4,12 12,19 12,15 20,15"/></svg>;
-        case 'arrow-up': return <svg {...props}><polygon points="9,20 9,12 5,12 12,4 19,12 15,12 15,20"/></svg>;
-        case 'arrow-down': return <svg {...props}><polygon points="9,4 9,12 5,12 12,20 19,12 15,12 15,4"/></svg>;
-        case 'math-plus': return <svg {...props}><path d="M10,4 v6 h-6 v4 h6 v6 h4 v-6 h6 v-4 h-6 v-6 z"/></svg>;
-        case 'math-minus': return <svg {...props}><path d="M4,10 h16 v4 h-16 z"/></svg>;
-        case 'math-multiply': return <svg {...props}><path d="M6,6 l12,12 M18,6 l-12,12"/></svg>;
-        case 'heart': return <svg {...props}><path d="M20.8,4.6a5.5,5.5 0 0,0-7.8,0l-1,1l-1,-1a5.5,5.5 0 0,0-7.8,7.8l1,1l7.8,7.8l7.8,-7.8l1,-1a5.5,5.5 0 0,0 0,-7.8z"/></svg>;
-        case 'cylinder': return <svg {...props}><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4,6 v12 a8,3 0 0,0 16,0 v-12"/></svg>;
-        case 'cube': return <svg {...props}><polygon points="12,3 20,7 20,15 12,19 4,15 4,7"/><polyline points="4,7 12,11 20,7"/><polyline points="12,19 12,11"/></svg>;
-        case 'lightning': return <svg {...props}><polygon points="13,2 3,14 12,14 11,22 21,10 12,10"/></svg>;
-        case 'moon': return <svg {...props}><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>;
-        case 'cloud': return <svg {...props}><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>;
-        case 'speech-bubble': return <svg {...props}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>;
-        default: return null;
-    }
+const DOCK_KEY = 'pb_dock_v1';
+const ERASER_SIZES = [8, 16, 28, 48, 80];
+/** מרחק מהקצה שבו גרירה מצמידה את הסרגל. גדול, כדי שיהיה קל לפגוע בו באצבע */
+const SNAP = 120;
+const SIDES = ['top', 'bottom', 'left', 'right'];
+const SIDE_LABEL = { top: 'למעלה', bottom: 'למטה', left: 'שמאל', right: 'ימין' };
+
+const loadDock = () => {
+    try {
+        const d = JSON.parse(localStorage.getItem(DOCK_KEY) || 'null');
+        if (d && [...SIDES, 'float'].includes(d.side)) return { collapsed: false, x: 0, y: 0, ...d };
+    } catch { /* אין אחסון */ }
+    return { side: 'top', x: 0, y: 0, collapsed: false };
+};
+const saveDock = (d) => { try { localStorage.setItem(DOCK_KEY, JSON.stringify(d)); } catch { /* מצב פרטי */ } };
+
+/** לאיזה צד של המסך הגרירה הקרובה ביותר. בפינה מעדיפים צד, כי שם נוח ליד */
+const nearestSide = (x, y) => {
+    const d = { left: x, right: window.innerWidth - x, top: y, bottom: window.innerHeight - y };
+    let best = null;
+    for (const k of ['left', 'right', 'top', 'bottom']) if (best === null || d[k] < d[best]) best = k;
+    return d[best] <= SNAP ? best : null;
 };
 
-export default function Toolbar({ mode, setMode, drawColor, setDrawColor, textColor, setTextColor, setGlobalFontSize, boardRef, onBack, eraserSize, setEraserSize, onPresent, onDrive }) {
-    const colors = ['#1a1a1a', '#f5f5f5', '#fde047', '#4ade80', '#22d3ee', '#f472b6'];
-    const [showAddMenu, setShowAddMenu] = useState(false);
+const SHAPE_CATEGORIES = [
+    { title: 'מצולעים', shapes: ['rect', 'triangle', 'right-triangle', 'diamond', 'pentagon', 'hexagon', 'heptagon', 'octagon', 'decagon', 'parallelogram', 'trapezoid'] },
+    { title: 'מעוגלים וכוכבים', shapes: ['circle', 'ellipse', 'half-circle', 'star-4', 'star-5', 'star-6'] },
+    { title: 'חצים', shapes: ['arrow-right', 'arrow-left', 'arrow-up', 'arrow-down'] },
+    { title: 'סימנים ותרשימים', shapes: ['math-plus', 'math-minus', 'math-multiply', 'cylinder', 'cube', 'heart', 'lightning', 'moon', 'cloud', 'speech-bubble'] },
+];
+
+const SHORTCUTS = [
+    ['1 עד 9', 'בחירת עט'],
+    ['E', 'מחק, ולחיצה נוספת מחליפה בין מחק חלקי לשלם'],
+    ['V', 'בחירה'],
+    ['T', 'טקסט'],
+    ['M', 'נוסחה'],
+    ['Ctrl+C / Ctrl+V', 'העתקה והדבקה במקום של הסמן'],
+    ['Ctrl+D', 'שכפול'],
+    ['Ctrl+Z / Ctrl+Y', 'ביטול וחזרה'],
+    ['Delete', 'מחיקת הבחירה'],
+    ['לחיצה ארוכה על הלוח', 'הגדרות הלוח, ואחרי העתקה גם הדבקה במקום הלחיצה'],
+    ['השהיית העט בסוף קו', 'הפיכת משיכה לצורה'],
+    ['שתי אצבעות', 'הקשה מבטלת, גרירה מזיזה, צביטה מגדילה'],
+    ['שלוש אצבעות', 'הקשה מבצעת שוב'],
+];
+
+/** כפתור בסרגל: אייקון ותווית קצרה מתחתיו, כדי שיהיה ברור מה כל כלי עושה */
+function DockButton({ icon, label, title, active, onClick, className = '', color }) {
+    return (
+        <button data-popover-anchor title={title || label} aria-label={title || label} aria-pressed={active ? 'true' : undefined}
+            className={`pb-btn ${active ? 'active' : ''} ${className}`} onClick={onClick}>
+            <Icon name={icon} size={22} />
+            <span className="pb-btn-label">{label}</span>
+            {active && color && <i className="pb-btn-ink" style={{ background: color }} />}
+        </button>
+    );
+}
+
+/**
+ * סרגל הכלים. למעלה: העטים והכלים. מתחתיו: סרגל צבעים אחד לכל מה שמציירים.
+ * הסרגל עוגן לכל אחד מארבעת הקצוות, כך שימניים ושמאליים מקבלים את אותה נוחות,
+ * או צף בכל מקום, מתכווץ לבועה, ונעשה שקוף כשכותבים לידו.
+ */
+export default function Toolbar({
+    mode, setMode, pens, activePenId, setActivePenId, updatePen, addExtraPen, removeExtraPen,
+    color, setColor, shownColor,
+    eraser, setEraser, setGlobalFontSize, boardRef,
+    onBack, onPresent, onDrive, pattern, selectionType, setSelectionType,
+}) {
+    const [dock, setDock] = useState(loadDock);
+    const [drag, setDrag] = useState(null);
+    const [pop, setPop] = useState(null);
+    const [showStem, setShowStem] = useState(false);
     const [showDesmos, setShowDesmos] = useState(false);
     const [showGridModal, setShowGridModal] = useState(false);
+    const [showHelp, setShowHelp] = useState(false);
     const [gridCols, setGridCols] = useState('10');
     const [gridRows, setGridRows] = useState('10');
-    const [selectionType, setSelectionType] = useState('freehand');
-    const menuRef = useRef(null);
+    const [clearArmed, setClearArmed] = useState(false);
+    const [showMathDl, setShowMathDl] = useState(false);
+    const [lastText, setLastText] = useState('text');
+    const wrapRef = useRef(null);
     const fileInputRef = useRef(null);
-    const colorPickerRef = useRef(null);
-    // --- הוסף את הבלוק הזה לכאן ---
-    const dragRef = useRef({ isDown: false, startX: 0, scrollLeft: 0 });
+    const recolorTimer = useRef(null);
 
-    const handleToolbarPointerDown = (e) => {
-        dragRef.current.isDown = true;
-        dragRef.current.startX = e.pageX - e.currentTarget.offsetLeft;
-        dragRef.current.scrollLeft = e.currentTarget.scrollLeft;
-    };
+    const act = useCallback((fn, ...args) => boardRef.current && boardRef.current[fn]?.(...args), [boardRef]);
+    const activePen = pens.find((p) => p.id === activePenId) || pens[0];
+    const side = drag ? 'float' : dock.side;
+    const vertical = side === 'left' || side === 'right';
+    const popSide = side === 'float' ? 'top' : side;
+    const kind = PEN_KINDS[activePen.kind];
+    
+    useEffect(() => { saveDock(dock); }, [dock]);
 
-    const handleToolbarPointerLeave = () => { dragRef.current.isDown = false; };
-    const handleToolbarPointerUp = () => { dragRef.current.isDown = false; };
-
-    const handleToolbarPointerMove = (e) => {
-        if (!dragRef.current.isDown) return;
+    /* ── גרירת הסרגל ── */
+    const onGripDown = (e) => {
         e.preventDefault();
-        const x = e.pageX - e.currentTarget.offsetLeft;
-        const walk = (x - dragRef.current.startX) * 1.5; // המכפיל קובע את מהירות הגלילה
-        e.currentTarget.scrollLeft = dragRef.current.scrollLeft - walk;
+        const r = wrapRef.current.getBoundingClientRect();
+        e.currentTarget.setPointerCapture?.(e.pointerId);
+        setPop(null);
+        setDrag({ dx: e.clientX - r.left, dy: e.clientY - r.top, x: r.left, y: r.top, sx: e.clientX, sy: e.clientY, moved: false, edge: null });
     };
+    const onGripMove = (e) => {
+        if (!drag) return;
+        const moved = drag.moved || Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) > 8;
+        setDrag({ ...drag, x: e.clientX - drag.dx, y: e.clientY - drag.dy, moved, edge: moved ? nearestSide(e.clientX, e.clientY) : null });
+    };
+    const onGripUp = () => {
+        if (!drag) return;
+        if (!drag.moved) {
+            setDock((d) => ({ ...d, collapsed: !d.collapsed }));
+        } else if (drag.edge) {
+            setDock((d) => ({ ...d, side: drag.edge }));
+        } else {
+            const vw = window.innerWidth, vh = window.innerHeight;
+            setDock((d) => ({ ...d, side: 'float', x: Math.max(4, Math.min(vw - 80, drag.x)), y: Math.max(4, Math.min(vh - 60, drag.y)) }));
+        }
+        setDrag(null);
+    };
+    const dockTo = (sd) => { setDock((d) => ({ ...d, side: sd, collapsed: false })); setPop(null); };
 
-    const act = (fn, ...args) => boardRef.current && boardRef.current[fn](...args);
+    const wrapStyle = (() => {
+        if (drag) return { left: drag.x, top: drag.y };
+        if (dock.side === 'float') {
+            const vw = window.innerWidth, vh = window.innerHeight;
+            return { left: Math.max(4, Math.min(vw - 80, dock.x)), top: Math.max(4, Math.min(vh - 60, dock.y)) };
+        }
+        return {};
+    })();
 
-    // ─── Desmos init ──────────────────────────────────────────────────────────
+    /* ── קיצורי מקלדת ── */
+    useEffect(() => {
+        const onKey = (e) => {
+            const t = e.target;
+            if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.tagName === 'MATH-FIELD' || t.isContentEditable)) return;
+            if (e.ctrlKey || e.metaKey || e.altKey) return;
+            if (/^[1-9]$/.test(e.key)) {
+                const p = pens[Number(e.key) - 1];
+                if (p) { setActivePenId(p.id); setMode('draw'); }
+            } else if (e.key === 'e' || e.key === 'E') {
+                if (mode === 'erase') setEraser({ ...eraser, mode: eraser.mode === 'pixel' ? 'stroke' : 'pixel' });
+                setMode('erase');
+            } else if (e.key === 'v' || e.key === 'V') setMode('select');
+            else if (e.key === 't' || e.key === 'T') { setLastText('text'); setMode('text'); }
+            else if (e.key === 'm' || e.key === 'M') { setLastText('math'); setMode('math'); }
+            else if (e.key === '?') setShowHelp((v) => !v);
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [pens, mode, eraser, setEraser, setMode, setActivePenId]);
+
+    /* ── עט הנוסחאות: בבחירה הראשונה מציעים להוריד את המודל, ומראים התקדמות ── */
+    useEffect(() => {
+        if (mode !== 'draw' || activePenId !== 'mathink') return undefined;
+        if (getMathInkStatus().state === 'ready') return undefined;
+        if (wasMathInkDownloaded()) { preloadMathInk(); return undefined; }
+        const t = setTimeout(() => setShowMathDl(true), 0);
+        return () => clearTimeout(t);
+    }, [mode, activePenId]);
+
+    /* ── Desmos ── */
     useEffect(() => {
         let calcInstance = null;
         if (showDesmos) {
             const initDesmos = () => {
                 const elt = document.getElementById('desmos-calculator');
                 if (elt && window.Desmos) {
-                    calcInstance = window.Desmos.GraphingCalculator(elt, {
-                        expressions: true,
-                        keypad: true,
-                        settingsMenu: true,
-                        // Force LTR inside Desmos
-                        language: 'he',
-                    });
-                    // Ensure the element itself is LTR after Desmos injects its DOM
+                    calcInstance = window.Desmos.GraphingCalculator(elt, { expressions: true, keypad: true, settingsMenu: true, language: 'he' });
                     elt.setAttribute('dir', 'ltr');
                 }
             };
             if (!document.getElementById('desmos-api-script')) {
                 const script = document.createElement('script');
                 script.id = 'desmos-api-script';
-                script.src = "https://www.desmos.com/api/v1.8/calculator.js?apiKey=dcb31709b452b1cf9dc26972add0fda6&lang=he";
+                script.src = 'https://www.desmos.com/api/v1.8/calculator.js?apiKey=dcb31709b452b1cf9dc26972add0fda6&lang=he';
                 script.async = true;
                 script.onload = initDesmos;
                 document.head.appendChild(script);
@@ -121,17 +193,41 @@ export default function Toolbar({ mode, setMode, drawColor, setDrawColor, textCo
         return () => { if (calcInstance) calcInstance.destroy(); };
     }, [showDesmos]);
 
-   // ─── Close add-menu on outside click ─────────────────────────────────────
-    useEffect(() => {
-        const handleClickOutside = (e) => {
-            // הוספנו תנאי שבודק אם הלחיצה הייתה בתוך התפריט עצמו
-            if (menuRef.current && !menuRef.current.contains(e.target) && !e.target.closest('.pro-menu')) {
-                setShowAddMenu(false);
-            }
-        };
-        document.addEventListener('mousedown', handleClickOutside);
-        return () => document.removeEventListener('mousedown', handleClickOutside);
-    }, []);
+    /** חלונית נפתחת ליד הכפתור, אבל מעבר לסרגל הצבעים ולא מעליו */
+    const openPop = (type, e) => {
+        const b = e.currentTarget.getBoundingClientRect();
+        const w = wrapRef.current?.getBoundingClientRect();
+        let a = { left: b.left, right: b.right, top: b.top, bottom: b.bottom, width: b.width, height: b.height };
+        if (w) {
+            if (dock.side === 'top') a = { ...a, bottom: w.bottom };
+            else if (dock.side === 'bottom') a = { ...a, top: w.top };
+            else if (dock.side === 'left') a = { ...a, right: w.right };
+            else if (dock.side === 'right') a = { ...a, left: w.left };
+        }
+        setPop((p) => (p && p.type === type ? null : { type, anchor: a }));
+    };
+
+    /* ── צבע: אחד לכל מה שמציירים, ובמצב בחירה גם צובע את מה שמסומן ── */
+    const pickColor = (c) => {
+        setColor(c);
+        act('updateActiveColor', c);
+        if (mode === 'select') {
+            clearTimeout(recolorTimer.current);
+            recolorTimer.current = setTimeout(() => act('recolorSelection', c), 120);
+        }
+    };
+    const isCustomColor = !COLOR_BAR.includes(color);
+
+    /* ── עטים ── */
+    const onPenTap = (p, e) => {
+        if (mode === 'draw' && p.id === activePenId) {
+            if (p.id === 'mathink' && getMathInkStatus().state !== 'ready' && !wasMathInkDownloaded()) { setShowMathDl(true); return; }
+            openPop('pen', e); return;
+        }
+        setActivePenId(p.id);
+        setMode('draw');
+        setPop(null);
+    };
 
     const handleImageUpload = (e) => {
         const file = e.target.files[0];
@@ -140,13 +236,8 @@ export default function Toolbar({ mode, setMode, drawColor, setDrawColor, textCo
             reader.onload = (f) => act('addImage', f.target.result);
             reader.readAsDataURL(file);
         }
-        setShowAddMenu(false);
-    };
-
-    // חלון רגיל במקום window.prompt, שחוסם את חוט הריצה ונראה זר באפליקציה
-    const handleAddGrid = () => {
-        setShowAddMenu(false);
-        setShowGridModal(true);
+        e.target.value = '';
+        setPop(null);
     };
 
     const confirmAddGrid = () => {
@@ -156,377 +247,298 @@ export default function Toolbar({ mode, setMode, drawColor, setDrawColor, textCo
         setShowGridModal(false);
     };
 
-    const isTyping = mode === 'text' || mode === 'math';
-    const activeColor = isTyping ? textColor : drawColor;
-    const handleColorChange = (c) => {
-        if (isTyping) setTextColor(c); else setDrawColor(c);
-        act('updateActiveColor', c);
+    const eraserIcon = eraser.mode === 'pixel' ? 'erase' : 'erase-stroke';
+    /* מחק, בחירה וטקסט: הקשה ראשונה בוחרת את הכלי, וכל הקשה נוספת מחליפה את סוגו */
+    const tapErase = () => {
+        setPop(null);
+        if (mode === 'erase') setEraser({ ...eraser, mode: eraser.mode === 'pixel' ? 'stroke' : 'pixel' });
+        else setMode('erase');
+    };
+    const tapSelect = () => {
+        setPop(null);
+        if (mode === 'select') setSelectionType(selectionType === 'box' ? 'freehand' : 'box');
+        else setMode('select');
+    };
+    const tapText = () => {
+        setPop(null);
+        if (mode === 'text') { setLastText('math'); setMode('math'); }
+        else if (mode === 'math') { setLastText('text'); setMode('text'); }
+        else setMode(lastText);
     };
 
-    const shapeCategories = [
-        { title: 'מצולעים (Polygons)', shapes: ['rect', 'triangle', 'right-triangle', 'diamond', 'pentagon', 'hexagon', 'heptagon', 'octagon', 'decagon', 'parallelogram', 'trapezoid'] },
-        { title: 'מעוגלים וכוכבים', shapes: ['circle', 'ellipse', 'half-circle', 'star-4', 'star-5', 'star-6'] },
-        { title: 'חצים מתקדמים', shapes: ['arrow-right', 'arrow-left', 'arrow-up', 'arrow-down'] },
-        { title: 'מתמטיקה ותרשימים', shapes: ['math-plus', 'math-minus', 'math-multiply', 'cylinder', 'cube', 'heart', 'lightning', 'moon', 'cloud', 'speech-bubble'] }
-    ];
-
-    // ─── Shared glass-panel style ─────────────────────────────────────────────
-    const glassPanel = {
-        background: 'rgba(28, 28, 30, 0.88)',
-        backdropFilter: 'blur(20px)',
-        WebkitBackdropFilter: 'blur(20px)',
-        border: '1px solid rgba(255, 255, 255, 0.09)',
-        borderRadius: '14px',
-        boxShadow: '0 8px 28px rgba(0,0,0,0.35)',
-    };
+    /* סרגל הגדלים: עובי העט הפעיל, או גודל המחק */
+    const textMode = mode === 'text' || mode === 'math';
+    const sizes = mode === 'draw' ? kind.sizes : mode === 'erase' ? ERASER_SIZES : null;
+    const sizeNow = mode === 'draw' ? activePen.width : eraser.size;
+    const sizeDot = (v) => (mode === 'draw'
+        ? Math.min(16, 3 + v * (activePen.kind === 'highlighter' ? 0.2 : 0.9))
+        : Math.min(16, 4 + v * 0.15));
+    const pickSize = (v) => { if (mode === 'draw') updatePen(activePen.id, { width: v }); else setEraser({ ...eraser, size: v }); };
 
     return (
         <>
-            {/* ── CSS ──────────────────────────────────────────────────────── */}
-            <style>{`
-                /* ── Toolbar buttons ── */
-                .pro-toolbar {
-                    display: flex; align-items: center; gap: 6px; padding: 7px;
-                }
-                .pro-btn {
-                    display: flex; justify-content: center; align-items: center;
-                    background: transparent; border: none; color: #a1a1aa;
-                    width: 38px; height: 38px; border-radius: 10px;
-                    cursor: pointer; transition: all 0.18s ease; flex-shrink: 0;
-                }
-                .pro-btn.with-text { width: auto; padding: 0 14px; gap: 7px; font-size: 13px; font-weight: 500; }
-                .pro-btn:hover  { background: rgba(255,255,255,0.09); color: #fff; }
-                .pro-btn.active { background: rgba(74,222,128,0.15); color: #4ade80; }
-                .pro-btn-danger:hover  { background: rgba(239,68,68,0.15); color: #ef4444; }
-                .pro-btn-desmos:hover  { background: rgba(59,130,246,0.15); color: #60a5fa; }
-                .pro-btn-ans   { color: #fde047; }
-                .pro-btn-ans:hover { background: rgba(253,224,71,0.15); color: #fef08a; }
-                .pro-btn-home  { color: #a1a1aa; }
-                .pro-btn-home:hover { background: rgba(255,255,255,0.09); color: #fff; }
-                .pro-btn-nav   { color: #a1a1aa; }
-                .pro-btn-nav:hover { background: rgba(255,255,255,0.09); color: #fff; }
-
-                .pro-divider { width: 1px; height: 22px; background: rgba(255,255,255,0.1); margin: 0 2px; flex-shrink: 0; }
-
-              /* ── Add-shapes dropdown ── */
-                .pro-menu {
-                    position: absolute; top: 65px; left: 50%; transform: translateX(-50%);
-                    background: rgba(22,22,24,0.97); backdrop-filter: blur(24px);
-                    border: 1px solid rgba(255,255,255,0.08); border-radius: 16px;
-                    box-shadow: 0 20px 48px rgba(0,0,0,0.55); padding: 14px;
-                    width: min(350px, 92vw); max-height: 65vh; overflow-y: auto;
-                    color: #fff; z-index: 9000;
-                }
-                .pro-menu-category { font-size: 11px; color: #71717a; margin: 14px 0 7px 4px; font-weight: 600; text-align: right; }
-                .shape-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 5px; }
-                .shape-icon-btn {
-                    display: flex; justify-content: center; align-items: center;
-                    background: transparent; border: 1px solid transparent;
-                    color: #e4e4e7; padding: 9px 0; border-radius: 8px;
-                    cursor: pointer; transition: 0.18s;
-                }
-                .shape-icon-btn:hover { background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.2); transform: scale(1.1); color: #4ade80; }
-                .pro-menu::-webkit-scrollbar { width: 5px; }
-                .pro-menu::-webkit-scrollbar-track { background: transparent; }
-                .pro-menu::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.18); border-radius: 10px; }
-
-                /* ── Responsive: compact toolbar on narrow screens ── */
-                @media (max-width: 600px) {
-                    .pro-toolbar { gap: 3px; padding: 5px; }
-                    .pro-btn { width: 32px; height: 32px; border-radius: 8px; }
-                    .pro-btn.with-text { padding: 0 8px; font-size: 12px; }
-                    .pro-divider { margin: 0 1px; height: 18px; }
-                    .pro-side-btn { width: 36px !important; height: 36px !important; }
-                }
-                @media (max-width: 380px) {
-                    .pro-btn { width: 28px; height: 28px; }
-                    .pro-side-btn { width: 30px !important; height: 30px !important; }
-                }
-
-                /* ── Desmos modal overlay ── */
-                .desmos-overlay {
-                    position: fixed; inset: 0;
-                    background: rgba(0,0,0,0.65);
-                    z-index: 9999;
-                    display: flex; justify-content: center; align-items: center;
-                    backdrop-filter: blur(8px);
-                    /* CRITICAL: force LTR so Desmos keyboard renders correctly */
-                    direction: ltr;
-                    unicode-bidi: isolate;
-                }
-                .desmos-window {
-                    /* Responsive: never exceed viewport, leave room for mobile chrome */
-                    width: min(92vw, 1100px);
-                    height: min(88vh, 820px);
-                    background: #fff;
-                    border-radius: 18px;
-                    position: relative;
-                    box-shadow: 0 24px 64px rgba(0,0,0,0.55);
-                    display: flex; flex-direction: column; overflow: hidden;
-                    direction: ltr;
-                }
-                .desmos-header {
-                    background: #1c1c1e;
-                    padding: 11px 18px;
-                    display: flex; justify-content: space-between; align-items: center;
-                    flex-shrink: 0;
-                    /* Header text is Hebrew → RTL, but the div itself stays LTR */
-                }
-                #desmos-calculator {
-                    flex: 1; width: 100%; min-height: 0;
-                    direction: ltr !important;
-                }
-            `}</style>
-
-            {/* ── Desmos modal ──────────────────────────────────────────────── */}
-            {showDesmos && (
-                <div className="desmos-overlay" onClick={(e) => { if (e.target === e.currentTarget) setShowDesmos(false); }}>
-                    <div className="desmos-window">
-                        <div className="desmos-header">
-                            {/* Close on the LEFT so it's natural in LTR layout */}
-                            <button
-                                onClick={() => setShowDesmos(false)}
-                                style={{ background: '#ef4444', color: '#fff', border: 'none', borderRadius: '8px', padding: '5px 14px', cursor: 'pointer', fontWeight: 700, fontSize: 14 }}
-                            >
-                                ✕
-                            </button>
-                            {/* Title on the right (Hebrew) */}
-                            <span style={{ fontWeight: 700, color: '#fff', fontSize: '1.05rem', direction: 'rtl' }}>
-                                מחשבון גרפי (Desmos)
-                            </span>
-                        </div>
-                        {/* This div MUST be dir="ltr" — Desmos injects its virtual keyboard here */}
-                        <div id="desmos-calculator" dir="ltr" />
-                    </div>
-                </div>
-            )}
-
-            {/* ── חלון הוספת מערכת צירים ──────────────────────────────────── */}
-            {showGridModal && (
-                <div className="desmos-overlay" style={{ direction: 'rtl' }}
-                     onClick={(e) => { if (e.target === e.currentTarget) setShowGridModal(false); }}>
-                    <div dir="rtl" style={{ ...glassPanel, background: 'rgba(22,22,24,0.98)', width: 'min(330px, 92vw)', padding: 22, borderRadius: 18, color: '#fff' }}>
-                        <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 18 }}>הוספת מערכת צירים</div>
-                        {[{ key: 'x', label: 'משבצות בציר X', value: gridCols, set: setGridCols },
-                          { key: 'y', label: 'משבצות בציר Y', value: gridRows, set: setGridRows }].map((f) => (
-                            <div key={f.key} style={{ marginBottom: 14 }}>
-                                <label style={{ fontSize: 12, color: '#a1a1aa', display: 'block', marginBottom: 6 }}>{f.label}</label>
-                                <input
-                                    type="number" min="1" max="200" value={f.value}
-                                    onChange={(e) => f.set(e.target.value)}
-                                    style={{ width: '100%', padding: '9px 12px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.05)', color: '#fff', fontSize: 15, direction: 'ltr', textAlign: 'center' }}
-                                />
-                            </div>
-                        ))}
-                        <div style={{ display: 'flex', gap: 8, marginTop: 20 }}>
-                            <button onClick={() => setShowGridModal(false)} style={{ flex: 1, padding: 10, borderRadius: 10, border: 'none', background: 'rgba(255,255,255,0.07)', color: '#a1a1aa', cursor: 'pointer', fontSize: 14 }}>ביטול</button>
-                            <button onClick={confirmAddGrid} style={{ flex: 1, padding: 10, borderRadius: 10, border: 'none', background: '#4ade80', color: '#14532d', cursor: 'pointer', fontWeight: 700, fontSize: 14 }}>הוסף</button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* ── Home button — top left ────────────────────────────────────── */}
+            {/* ── בית, ביטול וחזרה ── */}
             {onBack && (
-                <div style={{ position: 'fixed', top: 16, left: 16, zIndex: 1000 }}>
-                    <button
-                        title="חזרה לבחירת הלוחות"
-                        className="pro-btn pro-btn-home pro-side-btn"
-                        onClick={onBack}
-                        style={{ ...glassPanel, width: 42, height: 42, borderRadius: 12 }}
-                    >
-                        <Icon name="home" size={18} />
-                    </button>
-                </div>
+                <button title="חזרה ללוחות שלי" aria-label="חזרה ללוחות שלי" className="pb-corner pb-corner-left" onClick={onBack}>
+                    <Icon name="home" size={18} />
+                </button>
             )}
-
-            {/* ── Undo / Redo — top right ───────────────────────────────────── */}
-            <div style={{ position: 'fixed', top: 16, right: 16, zIndex: 1000, display: 'flex', gap: 8 }}>
-                <button
-                    title="בטל (Ctrl+Z)"
-                    className="pro-btn pro-btn-nav pro-side-btn"
-                    onClick={() => act('undo')}
-                    style={{ ...glassPanel, width: 42, height: 42, borderRadius: 12 }}
-                >
-                    <Icon name="undo" size={18} />
-                </button>
-                <button
-                    title="בצע שוב (Ctrl+Y)"
-                    className="pro-btn pro-btn-nav pro-side-btn"
-                    onClick={() => act('redo')}
-                    style={{ ...glassPanel, width: 42, height: 42, borderRadius: 12 }}
-                >
-                    <Icon name="redo" size={18} />
-                </button>
+            <div className="pb-corner-group">
+                <button title="בטל (Ctrl+Z, הקשה בשתי אצבעות)" aria-label="בטל" className="pb-corner" onClick={() => act('undo')}><Icon name="undo" size={18} /></button>
+                <button title="בצע שוב (Ctrl+Y, הקשה בשלוש אצבעות)" aria-label="בצע שוב" className="pb-corner" onClick={() => act('redo')}><Icon name="redo" size={18} /></button>
             </div>
 
-            {/* ── Main toolbar — top centre ─────────────────────────────────── */}
-            <div
-                style={{
-                    position: 'fixed', top: 16, left: '50%', transform: 'translateX(-50%)',
-                    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
-                    zIndex: 1000,
-                    maxWidth: 'calc(100vw - 130px)',
-                }}
-            >
-             {/* Main Toolbar - ללא עטיפת גלילה, שימוש באירועים ידניים */}
-                    <div className="pro-toolbar" 
-                         onPointerDown={handleToolbarPointerDown}
-                         onPointerLeave={handleToolbarPointerLeave}
-                         onPointerUp={handleToolbarPointerUp}
-                         onPointerMove={handleToolbarPointerMove}
-                         style={{ ...glassPanel, overflowX: 'hidden', touchAction: 'none', maxWidth: '100%', width: 'max-content', cursor: 'grab' }}>
-                        
-                        <button title="צייר"        className={`pro-btn ${mode==='draw'   ? 'active':''}`} onClick={() => { setMode('draw');   setShowAddMenu(false); }}><Icon name="draw"   /></button>
-                        <button title="מחק"         className={`pro-btn ${mode==='erase'  ? 'active':''}`} onClick={() => { setMode('erase');  setShowAddMenu(false); }}><Icon name="erase"  /></button>
-                        <button title="טקסט עברי"   className={`pro-btn ${mode==='text'   ? 'active':''}`} onClick={() => { setMode('text');   setShowAddMenu(false); }}><Icon name="text"   /></button>
-                        <button title="נוסחה"        className={`pro-btn ${mode==='math'   ? 'active':''}`} onClick={() => { setMode('math');   setShowAddMenu(false); }}><Icon name="math"   /></button>
-                       <button 
-                            title={selectionType === 'freehand' ? 'בחירה חופשית (לחץ שוב לבחירה מלבנית)' : 'בחירה מלבנית (לחץ שוב לבחירה חופשית)'} 
-                            className={`pro-btn ${mode === 'select' ? 'active' : ''}`} 
-                            onClick={() => {
-                                if (mode === 'select') {
-                                    const nextType = selectionType === 'freehand' ? 'box' : 'freehand';
-                                    setSelectionType(nextType);
-                                    act('setSelectionType', nextType);
-                                } else {
-                                    setMode('select');
-                                }
-                                setShowAddMenu(false);
-                            }}
-                        >
-                            <Icon name={selectionType === 'freehand' ? "select" : "select-box"} />
-                        </button>
+            {drag && drag.moved && SIDES.map((sd) => <div key={sd} className={`pb-dock-target edge-${sd} ${drag.edge === sd ? 'hot' : ''}`} />)}
 
+            {/* ── הסרגל, וסרגל הצבעים לצדו ── */}
+            <div ref={wrapRef} data-ui dir="ltr" data-side={side}
+                className={`pb-wrap side-${side} ${vertical ? 'vertical' : ''} ${dock.collapsed ? 'collapsed' : ''} ${drag ? 'dragging' : ''}`}
+                style={wrapStyle}>
+                <div data-scrollable dir="rtl" className="pb-dock" role="toolbar" aria-label="כלים">
+                    <button className="pb-grip" title="גרור לכל קצה של המסך, או הקש כדי לכווץ" aria-label="הזזה וכיווץ של הסרגל"
+                        onPointerDown={onGripDown} onPointerMove={onGripMove} onPointerUp={onGripUp} onPointerCancel={onGripUp}>
+                        <Icon name="grip" size={16} />
+                    </button>
 
-                        <div className="pro-divider" />
-
-                        <button title="פתור משוואה (Ans)" className="pro-btn pro-btn-ans" onClick={() => act('solveActiveBox')}><Icon name="ans" /></button>
-
-                        <div className="pro-divider" />
-
-                        <button title="מחשבון גרפי (Desmos)" className="pro-btn pro-btn-desmos" onClick={() => setShowDesmos(true)}><Icon name="desmos" /></button>
-
-                        <div className="pro-divider" />
-
-                        <button title="מצב הצגה" className="pro-btn" onClick={() => onPresent && onPresent()}><Icon name="present" /></button>
-                        <button title="גוגל דרייב" className="pro-btn" onClick={() => onDrive && onDrive()}><Icon name="drive" /></button>
-                        <button title="הקלטה מסונכרנת" className="pro-btn" onClick={() => boardRef.current?.toggleRecorder?.()}><Icon name="mic" /></button>
-
-                        <div className="pro-divider" />
-
-                        {/* כפתור הוספת הצורות - ללא התפריט הענק בתוכו */}
-                        <div style={{ position: 'relative' }} ref={menuRef}>
-                            <button className={`pro-btn with-text ${showAddMenu ? 'active' : ''}`} onClick={() => setShowAddMenu(!showAddMenu)}>
-                                <Icon name="add" />
-                            </button>
-                        </div>
-
-                        <div className="pro-divider" />
-
-                        <button title="נקה לוח" className="pro-btn pro-btn-danger" onClick={() => act('clearBoard')}><Icon name="clear" /></button>
-                    </div>
-
-                 {/* ── התפריט נשלף החוצה לכאן, הרחק מפס הגלילה ── */}
-                    {showAddMenu && (
-                        <div className="pro-menu" dir="rtl">
-                            <div style={{ display: 'flex', gap: 7 }}>
-                                <button className="pro-btn with-text" style={{ flex: 1, background: 'rgba(255,255,255,0.05)' }} onPointerDown={(e) => { e.preventDefault(); fileInputRef.current.click(); }}><Icon name="image" size={16} /> תמונה</button>
-                                <button className="pro-btn with-text" style={{ flex: 1, background: 'rgba(255,255,255,0.05)' }} onPointerDown={(e) => { e.preventDefault(); handleAddGrid(); }}><Icon name="grid" size={16} /> צירים</button>
+                    {dock.collapsed ? (
+                        <DockButton icon={kind.icon} label="" title="פתח את הסרגל" active={mode === 'draw'} color={shownColor}
+                            onClick={() => setDock((d) => ({ ...d, collapsed: false }))} />
+                    ) : (
+                        <>
+                            <div className="pb-group" role="radiogroup" aria-label="עטים">
+                                {pens.map((p, i) => (
+                                    <DockButton key={p.id} icon={PEN_KINDS[p.kind].icon} label={PEN_KINDS[p.kind].label}
+                                        title={`${PEN_KINDS[p.kind].label}, ${PEN_KINDS[p.kind].hint}. מקש ${i + 1}${mode === 'draw' && p.id === activePenId ? '. הקש שוב להגדרות' : ''}`}
+                                        active={mode === 'draw' && p.id === activePenId} color={shownColor}
+                                        onClick={(e) => onPenTap(p, e)} />
+                                ))}
+                                <button data-popover-anchor className="pb-btn pb-add" title="עטים נוספים: נוסחאות, חוט וקו מקווקו" aria-label="עטים נוספים" onClick={(e) => openPop('addpen', e)}>
+                                    <Icon name="plus" size={18} />
+                                </button>
                             </div>
-                            {shapeCategories.map((cat, idx) => (
-                                <div key={idx}>
-                                    <div className="pro-menu-category">{cat.title}</div>
-                                    <div className="shape-grid">
-                                        {cat.shapes.map(shape => (
-                                            <button key={shape} title={shape} className="shape-icon-btn" onPointerDown={(e) => { e.preventDefault(); act('addShape', shape); setShowAddMenu(false); }}>
-                                                <Icon name={shape} size={18} />
-                                            </button>
-                                        ))}
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
+                            <div className="pb-sep" />
+                            <div className="pb-group">
+                                <DockButton icon={eraserIcon} label={eraser.mode === 'pixel' ? 'מחק' : 'קו שלם'} className="pb-flip"
+                                    title={eraser.mode === 'pixel' ? 'מחק חלקי. הקש שוב כדי לעבור למחיקת קו שלם' : 'מחק קו שלם. הקש שוב כדי לעבור למחיקה חלקית'}
+                                    active={mode === 'erase'} onClick={tapErase} />
+                                <DockButton icon={selectionType === 'box' ? 'select-box' : 'lasso'} label={selectionType === 'box' ? 'מלבן' : 'לאסו'} className="pb-flip"
+                                    title={selectionType === 'box' ? 'בחירה במלבן. הקש שוב כדי לעבור ללאסו' : 'בחירה בלאסו. הקש שוב כדי לעבור למלבן'}
+                                    active={mode === 'select'} onClick={tapSelect} />
+                                <DockButton icon={mode === 'math' ? 'math' : mode === 'text' ? 'text' : lastText}
+                                    label={(mode === 'math' || (mode !== 'text' && lastText === 'math')) ? 'נוסחה' : 'טקסט'} className="pb-flip"
+                                    title={mode === 'math' ? 'נוסחה. הקש שוב כדי לעבור לטקסט' : mode === 'text' ? 'טקסט. הקש שוב כדי לעבור לנוסחה' : 'טקסט או נוסחה. הקש שוב כדי להחליף'}
+                                    active={mode === 'text' || mode === 'math'} onClick={tapText} />
+                            </div>
+                            <div className="pb-sep" />
+                            <div className="pb-group">
+                                <DockButton icon="stem" label="הנדסה" title="הנדסה ופיזיקה: רכיבים, נוסחאות, מחשבון, גרפים" className="pb-stem"
+                                    active={showStem} onClick={() => { setShowStem((v) => !v); setPop(null); }} />
+                                <DockButton icon="shapes" label="צורות" title="צורות, תמונה וצירים" active={pop?.type === 'shapes'} onClick={(e) => openPop('shapes', e)} />
+                                <DockButton icon="more" label="עוד" title="עוד: הגדרות, מיקום הסרגל, מצב הצגה" active={pop?.type === 'more'} onClick={(e) => openPop('more', e)} />
+                            </div>
+                        </>
                     )}
+                </div>
 
-
-               {/* Color row (draw / text / erase mode) */}
-                {(mode === 'draw' || isTyping || mode === 'erase') && (
-                    <div className="pro-toolbar" 
-                         onPointerDown={handleToolbarPointerDown}
-                         onPointerLeave={handleToolbarPointerLeave}
-                         onPointerUp={handleToolbarPointerUp}
-                         onPointerMove={handleToolbarPointerMove}
-                         style={{ ...glassPanel, padding: '5px 10px', overflowX: 'hidden', touchAction: 'none', maxWidth: '100%', width: 'max-content', cursor: 'grab' }}>
-                        {mode === 'erase' ? (
-                            /* ── Eraser size controls ── */
+                {/* ── סרגל הצבעים ── */}
+                {!dock.collapsed && (
+                    <div data-ui dir="rtl" className={`pb-colorbar ${mode === 'erase' ? 'dim' : ''}`} role="group" aria-label="צבעים">
+                        <div className="pb-colors">
+                            {COLOR_BAR.map((c) => (
+                                <button key={c} className={`pb-swatch ${color.toLowerCase() === c ? 'on' : ''}`} style={{ '--c': c }}
+                                    title={c === '#f5f5f5' ? 'לבן' : c === '#1a1a1a' ? 'שחור' : c} aria-label={`צבע ${c}`} aria-pressed={color.toLowerCase() === c}
+                                    onClick={() => pickColor(c)} />
+                            ))}
+                            <label className={`pb-swatch pb-rainbow ${isCustomColor ? 'on' : ''}`} title="בחירת צבע חופשית" aria-label="בחירת צבע חופשית">
+                                {isCustomColor && <i style={{ background: color }} />}
+                                <input type="color" value={color} onChange={(e) => pickColor(e.target.value)} />
+                            </label>
+                        </div>
+                        {textMode && (
                             <>
-                                <span style={{ color: '#a1a1aa', fontSize: 13, fontWeight: 600, paddingRight: 4, whiteSpace: 'nowrap' }}>עובי:</span>
-                                {[10, 20, 40, 70, 110].map(sz => (
-                                    <button
-                                        key={sz}
-                                        title={`${sz}px`}
-                                        onClick={() => setEraserSize && setEraserSize(sz)}
-                                        style={{
-                                            width: 20 + sz * 0.18, height: 20 + sz * 0.18,
-                                            maxWidth: 36, maxHeight: 36,
-                                            borderRadius: '50%', flexShrink: 0,
-                                            background: eraserSize === sz ? 'rgba(239,68,68,0.7)' : 'rgba(255,255,255,0.15)',
-                                            border: eraserSize === sz ? '2px solid white' : '2px solid transparent',
-                                            cursor: 'pointer', transition: '0.18s', margin: '0 3px',
-                                        }}
-                                    />
-                                ))}
+                                <div className="pb-sep" />
+                                <div className="pb-sizes" role="group" aria-label="גודל כתב">
+                                    <button className="pb-size pb-font" title="הקטן כתב" aria-label="הקטן כתב" onClick={() => { setGlobalFontSize((v) => Math.max(16, v - 6)); act('updateGlobalFontSize', -6); }}>A−</button>
+                                    <button className="pb-size pb-font" title="הגדל כתב" aria-label="הגדל כתב" onClick={() => { setGlobalFontSize((v) => v + 6); act('updateGlobalFontSize', 6); }}>A+</button>
+                                </div>
                             </>
-                        ) : (
-                            /* ── Draw / Text color controls ── */
+                        )}
+                        {sizes && (
                             <>
-                                {colors.map(c => (
-                                    <button
-                                        key={c}
-                                        style={{
-                                            background: c, width: 20, height: 20, borderRadius: '50%', flexShrink: 0,
-                                            border: activeColor === c ? '2px solid white' : '2px solid transparent',
-                                            boxShadow: activeColor === c ? '0 0 0 2px rgba(255,255,255,0.25)' : 'none',
-                                            cursor: 'pointer', transition: '0.18s', margin: '0 3px',
-                                        }}
-                                        onClick={() => handleColorChange(c)}
-                                    />
-                                ))}
-                                {/* Custom color picker */}
-                                <label
-                                    title="בחר צבע מותאם אישית"
-                                    style={{ position: 'relative', cursor: 'pointer', margin: '0 3px', flexShrink: 0 }}
-                                >
-                                    <div style={{
-                                        width: 22, height: 22, borderRadius: '50%',
-                                        background: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)',
-                                        border: colors.includes(activeColor) ? '2px solid transparent' : '2px solid white',
-                                        boxShadow: colors.includes(activeColor) ? 'none' : '0 0 0 2px rgba(255,255,255,0.25)',
-                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                    }} />
-                                    <input
-                                        ref={colorPickerRef}
-                                        type="color"
-                                        value={activeColor}
-                                        onChange={e => handleColorChange(e.target.value)}
-                                        style={{ position: 'absolute', opacity: 0, inset: 0, cursor: 'pointer', width: '100%', height: '100%' }}
-                                    />
-                                </label>
-                                {isTyping && (
-                                    <>
-                                        <div className="pro-divider" />
-                                        <button className="pro-btn" style={{ width: 'auto', padding: '0 7px', fontSize: 14, fontWeight: 700, color: '#fff' }} onClick={() => { setGlobalFontSize(prev => prev + 5); act('updateGlobalFontSize', 5); }}>A+</button>
-                                        <button className="pro-btn" style={{ width: 'auto', padding: '0 7px', fontSize: 14, fontWeight: 700, color: '#fff' }} onClick={() => { setGlobalFontSize(prev => Math.max(16, prev - 5)); act('updateGlobalFontSize', -5); }}>A-</button>
-                                    </>
-                                )}
+                                <div className="pb-sep" />
+                                <div className="pb-sizes" role="group" aria-label={mode === 'draw' ? 'עובי' : 'גודל המחק'}>
+                                    {sizes.map((v) => (
+                                        <button key={v} className={`pb-size ${Math.abs(sizeNow - v) < 0.01 ? 'on' : ''}`} onClick={() => pickSize(v)}
+                                            title={mode === 'draw' ? `עובי ${v}` : `גודל ${v}`} aria-label={mode === 'draw' ? `עובי ${v}` : `גודל ${v}`}>
+                                            <span style={{ width: sizeDot(v), height: sizeDot(v), ...(mode === 'erase' ? { background: 'transparent', border: '1.5px solid currentColor' } : null) }} />
+                                        </button>
+                                    ))}
+                                </div>
                             </>
                         )}
                     </div>
                 )}
             </div>
 
+            {/* ── חלוניות ── */}
+            {pop?.type === 'pen' && activePen && (
+                <Popover anchor={pop.anchor} side={popSide} onClose={() => setPop(null)} width={290} label="הגדרות עט">
+                    <div className="pe">
+                        <div className="pe-preview">
+                            <span className="pe-icon"><Icon name={kind.icon} size={26} /></span>
+                            <div>
+                                <div className="pe-title">{kind.label}</div>
+                                <div className="pe-hint">{kind.hint}</div>
+                            </div>
+                        </div>
+                        <div className="pe-section">
+                            <div className="pe-label">עובי <b dir="ltr">{activePen.width}</b></div>
+                            <input className="pe-range" type="range" min={activePen.kind === 'highlighter' ? 8 : 1} max={activePen.kind === 'highlighter' ? 140 : 30} step="0.5"
+                                value={activePen.width} onChange={(e) => updatePen(activePen.id, { width: Number(e.target.value) })} aria-label="עובי" />
+                        </div>
+                        {(activePen.kind === 'lord' || activePen.kind === 'highlighter') && (
+                            <div className="pe-section">
+                                <div className="pe-label">שקיפות <b dir="ltr">{Math.round((1 - activePen.opacity) * 100)}%</b></div>
+                                <input className="pe-range" type="range" min="0" max="90" step="5"
+                                    value={Math.round((1 - activePen.opacity) * 100)} onChange={(e) => updatePen(activePen.id, { opacity: 1 - Number(e.target.value) / 100 })} aria-label="שקיפות" />
+                            </div>
+                        )}
+                        <div className="pe-hint">הצבע נבחר בסרגל הצבעים שמתחת לסרגל הכלים.</div>
+                        <div className="pe-footer">
+                            <button onClick={() => updatePen(activePen.id, { width: kind.defaults.width, opacity: kind.defaults.opacity })}>איפוס</button>
+                            {kind.extra && <button className="danger" onClick={() => { removeExtraPen(activePen.id); setPop(null); }}><Icon name="trash" size={14} /> הסר מהסרגל</button>}
+                        </div>
+                    </div>
+                </Popover>
+            )}
+
+            {pop?.type === 'addpen' && (
+                <Popover anchor={pop.anchor} side={popSide} onClose={() => setPop(null)} width={300} label="הוספת עט">
+                    <div className="pe stem-list">
+                        <div className="pe-label" style={{ padding: '0 4px' }}>עטים נוספים. הבחירה מופיעה בסרגל</div>
+                        {EXTRA_KINDS.map((k) => (
+                            <button key={k} className={`pe-pick ${activePenId === k ? 'on' : ''}`} onClick={() => { addExtraPen(k); setMode('draw'); setPop(null); }}>
+                                <Icon name={PEN_KINDS[k].icon} size={22} />
+                                <span><b>{PEN_KINDS[k].label}</b><small>{PEN_KINDS[k].hint}</small></span>
+                            </button>
+                        ))}
+                    </div>
+                </Popover>
+            )}
+
+            {pop?.type === 'shapes' && (
+                <Popover anchor={pop.anchor} side={popSide} onClose={() => setPop(null)} width={340} label="צורות">
+                    <div className="pe">
+                        <div className="pe-seg two" style={{ marginBottom: 10 }}>
+                            <button onClick={() => fileInputRef.current?.click()}><Icon name="image" size={16} /> תמונה</button>
+                            <button onClick={() => { setPop(null); setShowGridModal(true); }}><Icon name="grid" size={16} /> מערכת צירים</button>
+                        </div>
+                        {SHAPE_CATEGORIES.map((cat) => (
+                            <div key={cat.title} className="pe-section">
+                                <div className="pe-label">{cat.title}</div>
+                                <div className="shape-grid">
+                                    {cat.shapes.map((shape) => (
+                                        <button key={shape} className="shape-btn" title={shape} onClick={() => { act('addShape', shape); setPop(null); }}>
+                                            <Icon name={shape} size={18} />
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        ))}
+                        <div className="pe-hint">הצורה נוצרת בצבע שנבחר בסרגל הצבעים.</div>
+                    </div>
+                </Popover>
+            )}
+
+            {pop?.type === 'more' && (
+                <Popover anchor={pop.anchor} side={popSide} onClose={() => { setPop(null); setClearArmed(false); }} width={290} label="עוד">
+                    <div className="pe stem-list">
+                        <div className="pe-section">
+                            <div className="pe-label">מיקום הסרגל</div>
+                            <div className="pe-sides">
+                                {['right', 'left', 'top', 'bottom'].map((sd) => (
+                                    <button key={sd} className={dock.side === sd ? 'on' : ''} onClick={() => dockTo(sd)} aria-label={`סרגל ${SIDE_LABEL[sd]}`} title={`סרגל ${SIDE_LABEL[sd]}`}>
+                                        <Icon name={`dock-${sd}`} size={22} />
+                                        <span>{SIDE_LABEL[sd]}</span>
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        <div className="pe-section" style={{ marginBottom: 6 }}>
+                            <div className="pe-label">מחק</div>
+                            <label className="pe-toggle sm">
+                                <input type="checkbox" checked={!!eraser.highlighterOnly} onChange={(e) => setEraser({ ...eraser, highlighterOnly: e.target.checked })} />
+                                <span>מחק רק מדגיש. הכתב שמתחתיו לא ייפגע</span>
+                            </label>
+                            <button className="mi-danger" onClick={() => {
+                                if (!clearArmed) { setClearArmed(true); return; }
+                                act('clearBoard'); setClearArmed(false); setPop(null);
+                            }}><Icon name="trash" size={15} /> {clearArmed ? 'לחץ שוב כדי לנקות הכול' : 'ניקוי כל הלוח'}</button>
+                        </div>
+                        <button onClick={() => { setShowDesmos(true); setPop(null); }}><Icon name="desmos" size={16} /> מחשבון גרפי Desmos</button>
+                        <button onClick={() => { onPresent?.(); setPop(null); }}><Icon name="present" size={16} /> מצב הצגה עם לייזר</button>
+                        <button onClick={() => { act('toggleRecorder'); setPop(null); }}><Icon name="mic" size={16} /> הקלטה מסונכרנת</button>
+                        <button onClick={() => { onDrive?.(); setPop(null); }}><Icon name="drive" size={16} /> גוגל דרייב</button>
+                        <button onClick={() => { act('openBoardSettings'); setPop(null); }}><Icon name="settings" size={16} /> הגדרות הלוח</button>
+                        <button onClick={() => { setShowHelp(true); setPop(null); }}><Icon name="keyboard" size={16} /> מחוות וקיצורים</button>
+                    </div>
+                </Popover>
+            )}
+
+            {showStem && (
+                <StemPanel boardRef={boardRef} inkColor={shownColor} pattern={pattern} dockSide={dock.side}
+                    onPattern={(p) => act('setPattern', p)}
+                    onInsertGrid={() => setShowGridModal(true)}
+                    onClose={() => setShowStem(false)} />
+            )}
+
+            {showMathDl && <MathInkDownload onClose={() => setShowMathDl(false)} />}
+
+            {showHelp && (
+                <div className="pb-modal" data-ui onPointerDown={(e) => { if (e.target === e.currentTarget) setShowHelp(false); }}>
+                    <div className="pb-modal-card" dir="rtl">
+                        <div className="pb-modal-title">מחוות וקיצורים</div>
+                        <table className="pb-keys"><tbody>
+                            {SHORTCUTS.map(([k, d]) => <tr key={k}><td dir="ltr">{k}</td><td>{d}</td></tr>)}
+                        </tbody></table>
+                        <button className="stem-primary" onClick={() => setShowHelp(false)}>סגור</button>
+                    </div>
+                </div>
+            )}
+
+            {showDesmos && (
+                <div className="desmos-overlay" data-ui onClick={(e) => { if (e.target === e.currentTarget) setShowDesmos(false); }}>
+                    <div className="desmos-window">
+                        <div className="desmos-header">
+                            <button onClick={() => setShowDesmos(false)} className="desmos-close" aria-label="סגור">✕</button>
+                            <span style={{ fontWeight: 700, color: '#fff', fontSize: '1.05rem', direction: 'rtl' }}>מחשבון גרפי Desmos</span>
+                        </div>
+                        <div id="desmos-calculator" dir="ltr" />
+                    </div>
+                </div>
+            )}
+
+            {showGridModal && (
+                <div className="pb-modal" data-ui onClick={(e) => { if (e.target === e.currentTarget) setShowGridModal(false); }}>
+                    <div className="pb-modal-card" dir="rtl" style={{ width: 'min(330px, 92vw)' }}>
+                        <div className="pb-modal-title">הוספת מערכת צירים</div>
+                        {[{ key: 'x', label: 'משבצות בציר X', value: gridCols, set: setGridCols },
+                          { key: 'y', label: 'משבצות בציר Y', value: gridRows, set: setGridRows }].map((f) => (
+                            <label key={f.key} className="calc-field">
+                                <span>{f.label}</span>
+                                <input type="number" min="1" max="200" dir="ltr" value={f.value} onChange={(e) => f.set(e.target.value)} />
+                            </label>
+                        ))}
+                        <div className="pe-seg two" style={{ marginTop: 14 }}>
+                            <button onClick={() => setShowGridModal(false)}>ביטול</button>
+                            <button className="on" onClick={confirmAddGrid}>הוסף</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             <input type="file" ref={fileInputRef} style={{ display: 'none' }} accept="image/*" onChange={handleImageUpload} />
         </>
     );
 }
+

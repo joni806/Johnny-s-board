@@ -1,17 +1,95 @@
 import { useRef, useEffect, useState, useImperativeHandle, forwardRef } from 'react';
 import * as fabricPkg from 'fabric';
 import 'mathlive';
-import { createGridGroup, createShape, buildRecognizedShape, isObjectNearPoint } from '../utils/canvasUtils';
-import { recognizeShape, buildInkPath } from '../utils/recognition';
+import katex from 'katex';
+import {
+    createGridGroup, createShape, buildRecognizedShape, isObjectNearPoint, EXTRA_PROPS, typeOf,
+    eraseObjectPartially, buildStamp, buildPlotGroup, SHAPE_FILL,
+} from '../utils/canvasUtils';
+import { recognizeShape, buildInkPath, fitLine, simplifyRDP } from '../utils/recognition';
 import { createInkStroke, samplePointer, paintInkStep } from '../utils/ink';
+import { PEN_KINDS, inkColorOn, dashArrayFor, isFilledInk } from '../utils/pens';
+import { patternStyle, PAPER_TYPES, GRID } from '../utils/patterns';
+import { stampById } from '../utils/stamps';
+import { samplePlot, niceTicks, logTicks, tickLabel } from '../utils/plot';
+import { recognizeInk, onMathInkStatus, getMathInkStatus, unionBounds } from '../utils/mathInk';
+import { installEngineeringKeyboard } from '../utils/mathKeyboard';
+import Icon from './icons';
 import { listRevisions, restoreRevision } from '../utils/storage';
 import { createLaser } from '../utils/laser';
 import { createRecorder, isRecordingSupported } from '../utils/recorder';
 import { isConnected as driveIsConnected, onDriveChange, uploadRecording, downloadFile, deleteFile } from '../utils/drive';
 import RecorderBar from './RecorderBar';
-import { solveExpression, terminateMathWorker } from '../utils/mathEngine';
+import { solveExpression, runCasAction, terminateMathWorker } from '../utils/mathEngine';
 
 const fabric = fabricPkg.fabric || fabricPkg;
+
+/* ── מסגרת עם ארבע פינות בלבד ──
+   כל פינה מותחת לפי כיוון התנועה, ובכל רגע של הגרירה מחדש: משיכה הצידה
+   מותחת רק לרוחב, משיכה למעלה או למטה רק לאורך, ומשיכה באלכסון מותחת את
+   שני הצירים יחד, חופשי לפי האצבע. כשהיחס בין הצירים קרוב למקורי, הוא
+   ננעל עליו, כך שקל להגדיל צורה בלי לעוות אותה. הכיוון נמדד ביחס לצירים
+   של האובייקט, ולכן גם אובייקט מסובב מתנהג נכון. אין ידיות באמצע הצלעות,
+   ויש מסגרת אחת לכל קבוצה נבחרת. */
+const originDir = (o) => {
+    const v = o === 'left' || o === 'top' ? -0.5 : o === 'right' || o === 'bottom' ? 0.5 : o === 'center' ? 0 : Number(o) || 0;
+    return v < 0 ? 1 : v > 0 ? -1 : 0;
+};
+const flexCorner = (eventData, transform, x, y) => {
+    const t = transform, o = t.target;
+    const dx = x - t.ex, dy = y - t.ey;
+    if (!t.pbMoved && Math.hypot(dx, dy) < 6) return false;
+    t.pbMoved = true;
+    const a = -((o.angle || 0) * Math.PI) / 180;
+    const lx = Math.abs(dx * Math.cos(a) - dy * Math.sin(a));
+    const ly = Math.abs(dx * Math.sin(a) + dy * Math.cos(a));
+    const ang = (Math.atan2(ly, lx) * 180) / Math.PI;
+    const mode = ang < 22 ? 'x' : ang > 68 ? 'y' : 'xy';
+    const np = fabric.controlsUtils.getLocalPoint(t, t.originX, t.originY, x, y);
+    const dim = o._getTransformedDimensions();
+    const span = (v, dir) => Math.max(4, dir === 0 ? Math.abs(v) * 2 : v * dir);
+    let sx = (span(np.x, originDir(t.originX)) * o.scaleX) / (dim.x || 1);
+    let sy = (span(np.y, originDir(t.originY)) * o.scaleY) / (dim.y || 1);
+    const ox = t.original.scaleX, oy = t.original.scaleY;
+    if (mode === 'x') sy = oy;
+    else if (mode === 'y') sx = ox;
+    else {
+        const rx = sx / ox, ry = sy / oy;
+        if (Math.abs(rx / ry - 1) < 0.08) { const k = Math.sqrt(rx * ry); sx = ox * k; sy = oy * k; }
+    }
+    if (o.lockScalingX) sx = o.scaleX;
+    if (o.lockScalingY) sy = o.scaleY;
+    if (sx === o.scaleX && sy === o.scaleY) return false;
+    o.set({ scaleX: sx, scaleY: sy });
+    return true;
+};
+let flexCornerAction = null;
+const cornerStretchOrScale = (eventData, transform, x, y) => {
+    if (!flexCornerAction) flexCornerAction = fabric.controlsUtils.wrapWithFireEvent('scaling', fabric.controlsUtils.wrapWithFixedAnchor(flexCorner));
+    return flexCornerAction(eventData, transform, x, y);
+};
+if (fabric.InteractiveFabricObject && fabric.Control && !fabric.InteractiveFabricObject.__pbFourCorners) {
+    const base = fabric.InteractiveFabricObject;
+    const orig = base.createControls.bind(base);
+    base.createControls = () => {
+        const { controls } = orig();
+        const mk = (x, y) => new fabric.Control({ x, y, actionHandler: cornerStretchOrScale, cursorStyleHandler: fabric.controlsUtils.scaleCursorStyleHandler });
+        const next = { tl: mk(-0.5, -0.5), tr: mk(0.5, -0.5), bl: mk(-0.5, 0.5), br: mk(0.5, 0.5) };
+        if (controls.mtr) next.mtr = controls.mtr;
+        return { controls: next };
+    };
+    base.__pbFourCorners = true;
+    // בבחירה מרובה: מסגרת אחת סביב הקבוצה, בלי מסגרת נפרדת לכל אובייקט
+    if (fabric.ActiveSelection) {
+        const parent = Object.getPrototypeOf(fabric.ActiveSelection.prototype);
+        fabric.ActiveSelection.prototype._renderControls = function (ctx, styleOverride) {
+            ctx.save();
+            ctx.globalAlpha = this.isMoving ? this.borderOpacityWhenMoving : 1;
+            parent._renderControls.call(this, ctx, styleOverride);
+            ctx.restore();
+        };
+    }
+}
 
 /** תקרות ההיסטוריה בזיכרון — במספר צעדים ובנפח תווים */
 const HISTORY_MAX_STEPS = 40;
@@ -52,7 +130,34 @@ const getPatternContrastColor = (hexColor) => {
     return luminance > 140 ? '0, 0, 0' : '255, 255, 255';
 };
 
-const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize, projectId, initialData, onAutoSave, eraserSize = 20, onBoardColorChange, onOpenDrive }, ref) => {
+/** רמות היישור של זיהוי הצורות, כפי שהן מוצגות בהגדרות הלוח */
+const SNAP_LEVELS = [
+    { id: 'faithful', label: 'כפי שצויר', hint: 'רק מיישר קווים. מרובע נשאר מרובע.' },
+    { id: 'balanced', label: 'מאוזן', hint: 'כמעט־ריבוע הופך לריבוע, מקבילית מכוונת נשארת מקבילית.' },
+    { id: 'perfect', label: 'מושלם', hint: 'כל צורה קופצת לגרסה הסימטרית שלה.' },
+];
+
+/** פעולות החישוב שבסרגל מעל תיבת נוסחה. label בכתיב מתמטי, title בעברית */
+const CAS_ACTIONS = [
+    { id: 'solve', label: '=', title: 'פתור או חשב' },
+    { id: 'simplify', label: 'פשט', title: 'פישוט', he: true },
+    { id: 'expand', label: 'פתח', title: 'פתיחת סוגריים', he: true },
+    { id: 'factor', label: 'פרק', title: 'פירוק לגורמים', he: true },
+    { id: 'diff', label: 'd/dx', title: 'נגזרת' },
+    { id: 'integrate', label: '∫dx', title: 'אינטגרל לא מסוים' },
+    { id: 'evaluate', label: '≈', title: 'ערך מספרי' },
+    { id: 'laplace', label: 'ℒ', title: 'התמרת לפלס, t אל s' },
+    { id: 'ilaplace', label: 'ℒ⁻¹', title: 'התמרת לפלס הפוכה, s אל t, דרך הקטבים' },
+    { id: 'partfrac', label: 'שברים חלקיים', title: 'פירוק לשברים חלקיים', he: true },
+    { id: 'det', label: 'det', title: 'דטרמיננטה של מטריצה' },
+    { id: 'inv', label: 'A⁻¹', title: 'מטריצה הופכית' },
+    { id: 'plot', label: 'גרף', title: 'שרטוט הפונקציה על הלוח', he: true },
+];
+
+const Board = forwardRef(({
+    mode, setMode, pen, eraser, textColor, globalFontSize, projectId, initialData, onAutoSave,
+    onBoardColorChange, onPatternChange, onOpenDrive, selectionType: selectionTypeProp = 'freehand',
+}, ref) => {
     const fabricCanvasElRef = useRef(null);
     const drawingCanvasRef = useRef(null);
     const mathLayerRef = useRef(null);
@@ -62,11 +167,25 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize,
 
     const [boardColor, setBoardColor] = useState(initialData?.bg || '#1e3d32');
     const [boardPatternType, setBoardPatternType] = useState(initialData?.pattern || 'grid');
-    const [selectionType, setSelectionType] = useState('freehand');
+    const selectionType = selectionTypeProp;
     const selectionTypeRef = useRef(selectionType);
     useEffect(() => { selectionTypeRef.current = selectionType; }, [selectionType]);
+    // רמת היישור של זיהוי הצורות, נשמרת עם הלוח
+    const [snapLevel, setSnapLevel] = useState(initialData?.snapLevel || 'balanced');
+    const snapLevelRef = useRef(snapLevel);
+    useEffect(() => { snapLevelRef.current = snapLevel; }, [snapLevel]);
+    // שבבים צפים: פירושים לצורה שזוהתה, זיהוי נוסחה, הדבקה, וסרגל החישוב
+    const [snapChip, setSnapChip] = useState(null);
+    const [inkChip, setInkChip] = useState(null);
+    const [pasteChip, setPasteChip] = useState(false);
+    const [pasteArmed, setPasteArmed] = useState(false);
+    const pasteArmedRef = useRef(false);
+    useEffect(() => { pasteArmedRef.current = pasteArmed; }, [pasteArmed]);
+    const [casBar, setCasBar] = useState(null);
+    const [mathInkState, setMathInkState] = useState(getMathInkStatus());
+    useEffect(() => onMathInkStatus(setMathInkState), []);
     const [gridSize] = useState(40);
-    // המרה אוטומטית של משיכה לצורה בהרמת העט. ניתן לכיבוי כדי לכתוב בכתב יד
+    // המרה של משיכה לצורה רק בהשהיית העט. ניתן לכיבוי כדי לכתוב בכתב יד
     const [autoSnap, setAutoSnap] = useState(initialData?.autoSnap !== false);
     const [pressureInk, setPressureInk] = useState(initialData?.pressureInk !== false);
     const [showBoardSettings, setShowBoardSettings] = useState(false);
@@ -99,17 +218,14 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize,
     // שחרור חוט החישוב כשהלוח נסגר, כדי שלא יישאר תקוע ברקע
     useEffect(() => () => terminateMathWorker(), []);
 
-    // החלפה אוטומטית של צבע עט כשרקע הלוח משתנה לבהיר/כהה
+    // צבע הלוח מדווח למעלה, כדי שהקלמר יציג גיר לבן כשחור על לוח בהיר
+    const boardColorRef = useRef(boardColor);
     useEffect(() => {
-        if (!onBoardColorChange) return;
-        const r = parseInt(boardColor.slice(1,3), 16) || 0;
-        const g = parseInt(boardColor.slice(3,5), 16) || 0;
-        const b = parseInt(boardColor.slice(5,7), 16) || 0;
-        const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
-        // רקע בהיר → עט שחור; רקע כהה → עט לבן
-        if (luminance > 180) onBoardColorChange('#1a1a1a');
-        else if (luminance < 60) onBoardColorChange('#f5f5f5');
+        boardColorRef.current = boardColor;
+        if (onBoardColorChange) onBoardColorChange(boardColor);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [boardColor]);
+    useEffect(() => { if (onPatternChange) onPatternChange(boardPatternType); }, [boardPatternType, onPatternChange]);
 
     const modeRef = useRef(mode);
     useEffect(() => { 
@@ -127,8 +243,13 @@ const Board = forwardRef(({ mode, drawColor, textColor, setMode, globalFontSize,
     const pressureInkRef = useRef(pressureInk);
     useEffect(() => { pressureInkRef.current = pressureInk; }, [pressureInk]);
 
-    const drawColorRef = useRef(drawColor);
-    useEffect(() => { drawColorRef.current = drawColor; }, [drawColor]);
+    const gestureActions = useRef({});
+    const penRef = useRef(pen);
+    useEffect(() => { penRef.current = pen; }, [pen]);
+    /** צבע הדיו בפועל — לבן הופך לשחור על לוח בהיר ולהפך */
+    const inkColor = () => inkColorOn(penRef.current?.color || '#f5f5f5', boardColorRef.current);
+    const eraserRef = useRef(eraser);
+    useEffect(() => { eraserRef.current = eraser; }, [eraser]);
     const textColorRef = useRef(textColor);
     useEffect(() => { textColorRef.current = textColor; }, [textColor]);
 
@@ -179,18 +300,25 @@ const syncCustomLayers = () => {
             mathLayerRef.current.style.transformOrigin = '0 0';
         }
 
-        // שכבת הרקע (משבצות/שורות/נקודות) מסתנכרנת עם הזום והתזוזה
+        // שכבת הרקע מסתנכרנת עם הזום והתזוזה. לכל שכבה בתוך הרקע — למשל
+        // הקווים הראשיים והמשניים בדף הנדסי — מוחל אותו מיקום
         if (patternBgRef.current) {
-            // הכפלת גודל המשבצת בזום הנוכחי
-            patternBgRef.current.style.backgroundSize = `${gridSize * zoom}px ${gridSize * zoom}px`;
-            // הזזת הרקע יחד עם המצלמה
-            patternBgRef.current.style.backgroundPosition = `${vpt[4]}px ${vpt[5]}px`;
+            const st = patternStyle(boardPatternTypeRef.current, getPatternContrastColor(boardColorRef.current), zoom);
+            patternBgRef.current.style.backgroundImage = st.image;
+            patternBgRef.current.style.backgroundSize = st.size;
+            patternBgRef.current.style.backgroundPosition = Array(st.layers).fill(`${vpt[4]}px ${vpt[5]}px`).join(', ');
         }
+        // סרגל החישוב והשבבים הצפים צמודים למקום על הלוח, ולכן זזים עם המצלמה
+        if (sb.current.activeBox && isMathBox(sb.current.activeBox)) placeCasBar(sb.current.activeBox);
+        if (sb.current.lastSnap) placeSnapChip();
         
         fCanvas.current.requestRenderAll(); 
     };
+    const boardPatternTypeRef = useRef(boardPatternType);
     useEffect(() => {
+        boardPatternTypeRef.current = boardPatternType;
         syncCustomLayers();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [boardPatternType, boardColor, gridSize]);
 
  useEffect(() => {
@@ -229,6 +357,10 @@ const syncCustomLayers = () => {
                 fireMiddleClick: true, allowTouchScrolling: false, 
                 stopContextMenu: true, renderOnAddRemove: false 
             });
+
+            // נקודת גישה לבדיקות הקצה־לקצה ולניפוי באגים מהקונסולה
+            window.__pbCanvas = fCanvas.current;
+            window.__pbFabric = fabric;
 
             // כל אובייקט שנוצר תוך כדי הקלטה מקבל את מיקומו בציר הזמן של
             // השמע. זה כל הסוד מאחורי קפיצה מכתב יד לרגע שבו הוא נכתב.
@@ -408,12 +540,18 @@ const syncCustomLayers = () => {
                 }
             }
             if (e.ctrlKey || e.metaKey) {
-                if (e.code === 'KeyZ') { e.preventDefault(); undo(); }
+                if (e.code === 'KeyZ') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); }
                 else if (e.code === 'KeyY') { e.preventDefault(); redo(); }
+                else if (e.code === 'KeyC' || e.code === 'KeyX' || e.code === 'KeyD' || e.code === 'KeyV') {
+                    keyClipboardRef.current(e);
+                }
             }
         };
         
         window.addEventListener('keydown', handleKeyDown, { passive: false });
+        // מיקום הסמן האחרון מעל הלוח — Ctrl+V מדביק בדיוק שם
+        const trackPointer = (e) => { sb.current.lastPointer = { x: e.clientX, y: e.clientY }; };
+        window.addEventListener('pointermove', trackPointer, { passive: true });
         const handleGlobalPointerGone = (e) => {
     if (!sb.current.activePointers.has(e.pointerId)) return;
     sb.current.activePointers.delete(e.pointerId);
@@ -428,6 +566,37 @@ const syncCustomLayers = () => {
 };
 window.addEventListener('pointerup', handleGlobalPointerGone);
 window.addEventListener('pointercancel', handleGlobalPointerGone);
+
+        /* ── הקשה בשתי אצבעות מבטלת, ובשלוש מבצעת שוב ──
+           המעקב כאן גלובלי ולא על הלוח בלבד: אצבע שנוגעת בסרגל עדיין נספרת,
+           ומערכת ההפעלה שמבטלת מחוות של שלוש אצבעות לא מבטלת גם את הפעולה. */
+        const tg = { ids: new Map(), max: 0, start: 0, moved: false, onBoard: false };
+        const gDown = (e) => {
+            if (e.pointerType !== 'touch') return;
+            if (tg.ids.size === 0) { tg.max = 0; tg.start = e.timeStamp; tg.moved = false; tg.onBoard = false; }
+            tg.ids.set(e.pointerId, { x0: e.clientX, y0: e.clientY });
+            tg.max = Math.max(tg.max, tg.ids.size);
+            if (e.target && e.target.closest && e.target.closest('#viewport')) tg.onBoard = true;
+        };
+        const gMove = (e) => {
+            const f = tg.ids.get(e.pointerId);
+            if (f && Math.hypot(e.clientX - f.x0, e.clientY - f.y0) > 18) tg.moved = true;
+        };
+        const gUp = (cancelled) => (e) => {
+            if (!tg.ids.has(e.pointerId)) return;
+            tg.ids.delete(e.pointerId);
+            if (tg.ids.size > 0) return;
+            const quick = (e.timeStamp - tg.start) < 600;
+            // ביטול של המערכת באמצע מחווה של שלוש אצבעות נחשב להקשה, אם לא הייתה תנועה
+            const ok = quick && !tg.moved && tg.onBoard && (cancelled ? tg.max >= 3 : tg.max >= 2);
+            if (ok) { if (tg.max >= 3) gestureActions.current.redo?.(); else gestureActions.current.undo?.(); }
+            tg.max = 0;
+        };
+        const gUpOk = gUp(false), gCancel = gUp(true);
+        window.addEventListener('pointerdown', gDown, true);
+        window.addEventListener('pointermove', gMove, true);
+        window.addEventListener('pointerup', gUpOk, true);
+        window.addEventListener('pointercancel', gCancel, true);
         const closeMenu = (e) => { if (!e.target.closest('.context-menu')) setContextMenu(prev => ({...prev, visible: false})); };
         window.addEventListener('pointerdown', closeMenu);
 
@@ -463,6 +632,8 @@ window.addEventListener('pointercancel', handleGlobalPointerGone);
 
             // --- חסימת גלילה אגרסיבית למכשירים ניידים ---
             const preventNativeScroll = (e) => {
+                // רשימות וחלוניות שמסומנות כנגללות — הסרגל, מגירת ההנדסה — גוללות כרגיל
+                if (e.target && e.target.closest && e.target.closest('[data-scrollable], .stem-panel, .pb-popover, .pb-modal-card, .ML__keyboard')) return;
                 // חוסמים גלילה אלא אם המשתמש נמצא במצב בחירה (Select) ומנסה לגלול אובייקט ספציפי
                 if (modeRef.current !== 'select') {
                     e.preventDefault(); 
@@ -477,9 +648,14 @@ window.addEventListener('pointercancel', handleGlobalPointerGone);
             return () => {
                 window.removeEventListener('resize', handleResize);
                 window.removeEventListener('keydown', handleKeyDown);
+                window.removeEventListener('pointermove', trackPointer);
                 window.removeEventListener('pointerdown', closeMenu);
                 window.removeEventListener('pointerup', handleGlobalPointerGone);
 window.removeEventListener('pointercancel', handleGlobalPointerGone);
+                window.removeEventListener('pointerdown', gDown, true);
+                window.removeEventListener('pointermove', gMove, true);
+                window.removeEventListener('pointerup', gUpOk, true);
+                window.removeEventListener('pointercancel', gCancel, true);
                 
                 window.removeEventListener('touchmove', preventNativeScroll);
                 window.removeEventListener('wheel', preventNativeScroll);
@@ -498,7 +674,10 @@ window.removeEventListener('pointercancel', handleGlobalPointerGone);
 // לחיצה ארוכה — רק אצבע אחת
     if (sb.current.activePointers.size === 1) {
         // ← זיהוי לחיצה כפולה למעבר מעיגולים כחולים → מסגרת לבנה
-        const now = Date.now();
+        // זמן האירוע עצמו ולא Date.now — אותו שעון לכל האירועים, ובלי קריאה לא טהורה
+        const now = e.timeStamp;
+        sb.current.touchStartTime = now;     // תחילת המגע, למדידת הקשה בשתי אצבעות או שלוש
+        if (e.pointerType === 'touch') sb.current.lastTouchEventAt = now;
         const timeSinceLastTap = now - sb.current.lastTapTime;
         const tapDist = Math.hypot(e.clientX - sb.current.lastTapX, e.clientY - sb.current.lastTapY);
         sb.current.lastTapTime = now;
@@ -562,7 +741,9 @@ window.removeEventListener('pointercancel', handleGlobalPointerGone);
 
      sb.current.longPressTimer = setTimeout(() => {
     sb.current.longPressTimer = null;
-    sb.current.longPressFired = true; // ← הוסף את השורה הזו כאן!
+    // אם הונחה אצבע שנייה, זו הקשה בשתי אצבעות ולא לחיצה ארוכה
+    if (sb.current.activePointers.size !== 1 || sb.current.multiTouchMaxFingers >= 2) return;
+    sb.current.longPressFired = true;
     sb.current.drawing = false;
     sb.current.points = [];
     sb.current.hasMovedEnoughToDraw = false;
@@ -595,14 +776,18 @@ window.removeEventListener('pointercancel', handleGlobalPointerGone);
     if (target) {
         setContextMenu({ visible: true, x: cx, y: cy, target });
         setShowBoardSettings(false); setRevisions(null);
-    } else if (sb.current.clipboard) {
-        // יש clipboard — מציג תפריט עם אפשרות הדבקה
-        setContextMenu({ visible: true, x: cx, y: cy, target: null });
-        setShowBoardSettings(false); setRevisions(null);
     } else {
-        setBoardSettingsPos({ x: cx, y: cy });
-        setShowBoardSettings(true);
-        setContextMenu({ visible: false, x: 0, y: 0, target: null });
+        // לחיצה ארוכה על מקום ריק: אם הועתק משהו, תפריט עם הדבקה בנקודה הזו.
+        // אחרת, הגדרות הלוח, כמו שהיה תמיד
+        sb.current.menuPoint = { x: cx, y: cy };
+        if (sb.current.clipboard) {
+            setContextMenu({ visible: true, x: cx, y: cy, target: null });
+            setShowBoardSettings(false); setRevisions(null);
+        } else {
+            setBoardSettingsPos({ x: cx, y: cy });
+            setShowBoardSettings(true);
+            setContextMenu({ visible: false, x: 0, y: 0, target: null });
+        }
     }
 }, 500);
     }
@@ -612,7 +797,7 @@ window.removeEventListener('pointercancel', handleGlobalPointerGone);
         if (sb.current.longPressTimer) { clearTimeout(sb.current.longPressTimer); sb.current.longPressTimer = null; }
 
         if (sb.current.activePointers.size === 2) {
-            sb.current.multiTouchStartTime = Date.now();
+            sb.current.multiTouchStartTime = sb.current.touchStartTime ?? e.timeStamp;
             sb.current.multiTouchMoved = false;
             sb.current.multiTouchMaxFingers = 2;
             sb.current.multiTouchInitialPositions = new Map(sb.current.activePointers);
@@ -663,6 +848,9 @@ const handleViewportPointerMove = (e) => {
         }
     }
 
+    // אצבע "מושלם" שמונחת על המסך לא מזיזה את הלוח
+    if (sb.current.perfectPointer !== undefined && sb.current.perfectPointer !== null) return;
+
     // פינץ' + פאן — שתי אצבעות
     if (sb.current.activePointers.size === 2 && fCanvas.current) {
         const pts = Array.from(sb.current.activePointers.values());
@@ -677,7 +865,7 @@ const handleViewportPointerMove = (e) => {
             if (initial) { const d = Math.hypot(pos.x - initial.x, pos.y - initial.y); if (d > maxMovement) maxMovement = d; }
         });
 
-       if (maxMovement > 10 || Math.abs(currentDist - sb.current.pinchInitialDist) > 8) {
+       if (maxMovement > 16 || Math.abs(currentDist - sb.current.pinchInitialDist) > 14) {
             sb.current.multiTouchMoved = true;
             if (!sb.current.pinchingObject) {
                 sb.current.isPanning = true; setPanCursor(true);
@@ -728,16 +916,19 @@ const handleViewportPointerMove = (e) => {
 const handleViewportPointerUp = (e) => {
     if (sb.current.longPressTimer) { clearTimeout(sb.current.longPressTimer); sb.current.longPressTimer = null; }
     sb.current.activePointers.delete(e.pointerId);
+    if (sb.current.perfectPointer === e.pointerId) {
+        sb.current.perfectPointer = null;
+        sb.current.multiTouchStartTime = null;
+        sb.current.multiTouchMaxFingers = 0;
+        return;
+    }
     
     if (sb.current.pinchingObjectModified) { saveState(); sb.current.pinchingObjectModified = false; }
 
         if (sb.current.activePointers.size === 0) {
             // כל האצבעות עלו — עכשיו בודקים טאפ
-            const touchDuration = Date.now() - (sb.current.multiTouchStartTime || 0);
-            const wasTap = !sb.current.multiTouchMoved && touchDuration < 300 && sb.current.multiTouchMaxFingers >= 2;
 
-            if (wasTap && sb.current.multiTouchMaxFingers === 2) undo();
-            else if (wasTap && sb.current.multiTouchMaxFingers >= 3) redo();
+            // ביטול וביצוע חוזר מטופלים במעקב המחוות הגלובלי, שסופר גם אצבעות שנוגעות בסרגל
 
             // מאפסים הכל רק אחרי הבדיקה
             sb.current.isPanning = false; setPanCursor(false);
@@ -758,55 +949,66 @@ const handleViewportPointerUp = (e) => {
 
  const handleContextMenuAction = (clientX, clientY) => {
         if (!fCanvas.current) return;
-        const pointer = fCanvas.current.getPointer({ clientX, clientY });
+        // getPointer הוסר ב־Fabric 7, והקריאה אליו זרקה שגיאה שהשתיקה את כל
+        // תפריט הלחיצה הימנית. החישוב כאן ידני ותואם לכל גרסה.
+        const pointer = toScene(clientX, clientY);
+        const active = fCanvas.current.getActiveObject();
         let target = null;
+        if (active && active.containsPoint(pointer)) target = active;
         const objects = fCanvas.current.getObjects();
-        for (let i = objects.length - 1; i >= 0; i--) {
+        for (let i = objects.length - 1; i >= 0 && !target; i--) {
             if (objects[i].isEditHelper) continue;
-            if (objects[i].containsPoint(pointer)) { target = objects[i]; break; }
+            if (objects[i].containsPoint(pointer) || isObjectNearPoint(objects[i], pointer, 6 / fCanvas.current.getZoom())) { target = objects[i]; break; }
         }
-        
         if (target) {
-            // לחיצה על צורה
-            setContextMenu({ visible: true, x: clientX, y: clientY, target: target });
+            setContextMenu({ visible: true, x: clientX, y: clientY, target });
             setShowBoardSettings(false); setRevisions(null);
         } else if (sb.current.clipboard) {
-            // לחיצה על הלוח ויש משהו מועתק
+            sb.current.menuPoint = { x: clientX, y: clientY };
             setContextMenu({ visible: true, x: clientX, y: clientY, target: null });
             setShowBoardSettings(false); setRevisions(null);
         } else {
-            // לחיצה על הלוח כשהכל ריק
             setShowBoardSettings(true);
             setBoardSettingsPos({ x: clientX, y: clientY });
             setContextMenu({ visible: false, x: 0, y: 0, target: null });
         }
     };
 
-    const handleNativeContextMenu = (e) => { e.preventDefault(); handleContextMenuAction(e.clientX, e.clientY); };
+    const handleNativeContextMenu = (e) => {
+        e.preventDefault();
+        // לחיצה ארוכה במגע מעלה גם אירוע contextmenu — הטיימר כבר מטפל בה
+        if (sb.current.longPressFired || e.pointerType === 'touch' || e.pointerType === 'pen') return;
+        // מערכות מסוימות הופכות הקשה בשתי אצבעות ללחיצה ימנית. זו לא בקשה לתפריט
+        if (sb.current.activePointers.size >= 2 || sb.current.multiTouchMaxFingers >= 2 || (e.timeStamp - (sb.current.lastTouchEventAt || -1e9)) < 900) return;
+        handleContextMenuAction(e.clientX, e.clientY);
+    };
+
+    /** מקום הנחה של אובייקט שנגרר מהפאנל. כל הוספה באותו רגע נוחתת שם ולא במרכז */
+    const dropRef = useRef(null);
+    const withDrop = (at, fn) => {
+        dropRef.current = at && fCanvas.current ? toScene(at.x, at.y) : null;
+        try { return fn(); } finally { dropRef.current = null; }
+    };
+
+    /** נקודה במסך → נקודה בלוח */
+    const toScene = (clientX, clientY) => {
+        const rect = viewportRef.current ? viewportRef.current.getBoundingClientRect() : { left: 0, top: 0 };
+        const zoom = fCanvas.current.getZoom();
+        const vpt = fCanvas.current.viewportTransform;
+        return new fabric.Point((clientX - rect.left - vpt[4]) / zoom, (clientY - rect.top - vpt[5]) / zoom);
+    };
+
     const getStrokeWidth = () => fCanvas.current ? 3 / fCanvas.current.getZoom() : 3;
 
     const buildLine = (p1, p2, color) => { let l = new fabric.Line([p1.x, p1.y, p2.x, p2.y], { stroke: color, strokeWidth: getStrokeWidth(), strokeLineCap: 'round', selectable: true, hasControls: true }); l.customType = 'line'; return l; };
     const buildArrow = (start, end, color) => { let angle = Math.atan2(end.y - start.y, end.x - start.x); let headlen = 20; const pathData = `M ${start.x} ${start.y} L ${end.x} ${end.y} L ${end.x - headlen * Math.cos(angle - Math.PI / 6)} ${end.y - headlen * Math.sin(angle - Math.PI / 6)} M ${end.x} ${end.y} L ${end.x - headlen * Math.cos(angle + Math.PI / 6)} ${end.y - headlen * Math.sin(angle + Math.PI / 6)}`; let p = new fabric.Path(pathData, { fill: 'transparent', stroke: color, strokeWidth: getStrokeWidth(), strokeLineCap: 'round', strokeLineJoin: 'round', selectable: true }); p.customType = 'arrow'; return p; };
     const buildCurve = (start, cp, end, color) => { const pathData = `M ${start.x} ${start.y} Q ${cp.x} ${cp.y} ${end.x} ${end.y}`; let p = new fabric.Path(pathData, { fill: 'transparent', stroke: color, strokeWidth: getStrokeWidth(), strokeLineCap: 'round', selectable: true }); p.customType = 'curve'; return p; };
 
-  const handleDeleteTarget = () => {
-        if (contextMenu.target) {
-            const objToDelete = sb.current.editingOriginalObj || contextMenu.target;
-            exitNodeEditMode(); 
-            fCanvas.current.remove(objToDelete);
-            fCanvas.current.remove(contextMenu.target); 
-            fCanvas.current.discardActiveObject();
-            fCanvas.current.requestRenderAll();
-            saveState();
-            setContextMenu(prev => ({...prev, visible: false}));
-        }
-    };
-
     // ← פונקציה חדשה שקושרת את הצורה לעיגולים הכחולים ומאפשרת לגרור את כולה
     const bindShapeEvents = (shape) => {
         shape.set({ 
             selectable: true, evented: true, hasControls: false, hasBorders: false, 
-            opacity: 0.5, lockRotation: true, lockScalingX: true, lockScalingY: true 
+            opacity: 0.5 * (sb.current.editOpacity ?? 1), lockRotation: true, lockScalingX: true, lockScalingY: true 
         });
 
         shape.off('mousedown'); shape.off('mouseup'); shape.off('moving'); shape.off('modified');
@@ -835,8 +1037,8 @@ const handleViewportPointerUp = (e) => {
         if (sb.current.editCircles.length > 0) {
             sb.current.editCircles.forEach(c => fCanvas.current.remove(c)); sb.current.editCircles = [];
             if (sb.current.editingOriginalObj) { 
-                sb.current.editingOriginalObj.set({ 
-                    opacity: 1, selectable: true, evented: true, hasControls: true, 
+ sb.current.editingOriginalObj.set({ 
+                    opacity: sb.current.editOpacity ?? 1, selectable: true, evented: true, hasControls: true, 
                     lockRotation: false, lockScalingX: false, lockScalingY: false 
                 }); 
                 
@@ -856,6 +1058,8 @@ const handleViewportPointerUp = (e) => {
         sb.current.isEnteringNodeEdit = true; 
         exitNodeEditMode(); 
         sb.current.editingOriginalObj = obj;
+        // האטימות המקורית נשמרת בצד — מדגיש שקוף לא יחזור אטום אחרי עריכה
+        sb.current.editOpacity = obj.opacity ?? 1;
         
         bindShapeEvents(obj); // מפעיל את הגרירה החכמה על הצורה
         fCanvas.current.setActiveObject(obj); // משאיר את הצורה פעילה כך שנוכל לגרור אותה מיד
@@ -990,13 +1194,21 @@ const handleViewportPointerUp = (e) => {
         sb.current.isEnteringNodeEdit = false; 
     };
 
-  const updateNodeGeometry = (newObj) => {
+ const updateNodeGeometry = (newObj) => {
         const obj = sb.current.editingOriginalObj; 
+        // הצורה החדשה יורשת את המראה של המקורית: עובי, קווקוו, סוג העט וחוט
+        if (obj) {
+            newObj.set({ strokeWidth: obj.strokeWidth, strokeDashArray: obj.strokeDashArray || null });
+            for (const k of ['dashStyle', 'penKind', 'wire', 'recTime', 'recId']) if (obj[k] !== undefined) newObj[k] = obj[k];
+            if (obj.customType === 'arrow' && obj.headLength) newObj.headLength = obj.headLength;
+        }
+        const at = obj ? fCanvas.current.getObjects().indexOf(obj) : -1;
         fCanvas.current.remove(obj); 
         
         bindShapeEvents(newObj); // חיבור מחדש של אירועי הגרירה לצורה החדשה
         
-        fCanvas.current.add(newObj);
+        // באותו מקום בערימה, כדי שעריכת קודקוד לא תקפיץ צורה מעל הכתב
+        if (at >= 0) fCanvas.current.insertAt(at, newObj); else fCanvas.current.add(newObj);
         
         // הפתרון לקפיצות: להבטיח שהעיגולים הכחולים תמיד נשארים השכבה העליונה ביותר!
         // ברגע שהצורה החדשה נוצרה, נוודא שהיא לא מסתירה אותם וגונבת את הלחיצה.
@@ -1010,8 +1222,6 @@ const handleViewportPointerUp = (e) => {
         sb.current.editingOriginalObj = newObj;
     };
 
-    const eraserSizeRef = useRef(eraserSize);
-    useEffect(() => { eraserSizeRef.current = eraserSize; }, [eraserSize]);
     
     const autosaveTimerRef = useRef(null);
     
@@ -1103,10 +1313,10 @@ const handleViewportPointerUp = (e) => {
             lockRotation: edited.lockRotation, lockScalingX: edited.lockScalingX, lockScalingY: edited.lockScalingY,
         } : null;
         if (edited) edited.set({
-            opacity: 1, selectable: true, evented: true, hasControls: true, hasBorders: true,
+            opacity: sb.current.editOpacity ?? 1, selectable: true, evented: true, hasControls: true, hasBorders: true,
             lockRotation: false, lockScalingX: false, lockScalingY: false,
         });
-        const state = { fabric: fCanvas.current.toObject(['customType', 'inkFilled', 'recTime', 'recId']), math: mathData };
+        const state = { fabric: fCanvas.current.toObject(EXTRA_PROPS), math: mathData };
         if (edited && editLook) edited.set(editLook);
         return state;
     };
@@ -1157,7 +1367,7 @@ const handleViewportPointerUp = (e) => {
                 if (!state) return;
                 Promise.resolve(onAutoSave({
                     fabric: state.fabric, math: state.math,
-                    bg: boardColor, pattern: boardPatternType, autoSnap, pressureInk,
+                    bg: boardColor, pattern: boardPatternType, autoSnap, pressureInk, snapLevel,
                 })).then((res) => {
                     if (res && res.ok === false) {
                         showToast(res.reason === 'quota'
@@ -1173,7 +1383,7 @@ const handleViewportPointerUp = (e) => {
         if (autosaveTimerRef.current) { clearTimeout(autosaveTimerRef.current); autosaveTimerRef.current = null; }
         flushHistory();
         if (onAutoSave && sb.current.lastState) {
-            onAutoSave({ fabric: sb.current.lastState.fabric, math: sb.current.lastState.math, bg: boardColor, pattern: boardPatternType, autoSnap, pressureInk });
+            onAutoSave({ fabric: sb.current.lastState.fabric, math: sb.current.lastState.math, bg: boardColor, pattern: boardPatternType, autoSnap, pressureInk, snapLevel });
         }
     };
     const flushNowRef = useRef(flushNow);
@@ -1377,6 +1587,38 @@ const handleViewportPointerUp = (e) => {
     const seekToObjectRef = useRef(() => false);
     useEffect(() => { seekToObjectRef.current = seekToObject; });
 
+    /* קיצורי העתקה והדבקה. מוגדרים דרך ref, כי מאזין המקלדת נרשם פעם אחת */
+    const keyClipboardRef = useRef(() => {});
+    useEffect(() => {
+        keyClipboardRef.current = async (e) => {
+            if (!fCanvas.current || sb.current.activeBox) return;
+            const active = fCanvas.current.getActiveObject();
+            if (e.code === 'KeyC' && active) { e.preventDefault(); await copyObject(active); showToast('הועתק'); }
+            else if (e.code === 'KeyX' && active) {
+                e.preventDefault();
+                await copyObject(active);
+                const kids = typeOf(active) === 'activeselection' ? active.getObjects() : [active];
+                exitNodeEditMode();
+                fCanvas.current.discardActiveObject();
+                kids.forEach((o) => fCanvas.current.remove(o));
+                fCanvas.current.requestRenderAll();
+                saveState();
+            } else if (e.code === 'KeyD' && active) {
+                e.preventDefault();
+                const prev = sb.current.clipboard;
+                await copyObject(active);
+                await pasteAt(null);
+                sb.current.clipboard = prev || sb.current.clipboard;
+            } else if (e.code === 'KeyV' && sb.current.clipboard) {
+                e.preventDefault();
+                const lp = sb.current.lastPointer;
+                const rect = viewportRef.current?.getBoundingClientRect();
+                const inside = lp && rect && lp.x > rect.left && lp.x < rect.right && lp.y > rect.top && lp.y < rect.bottom;
+                await pasteAt(inside ? toScene(lp.x, lp.y) : null);
+            }
+        };
+    });
+
     // ניקוי בסגירת הלוח — מיקרופון פתוח או נגן שממשיך ברקע הם באג מציק
     useEffect(() => () => {
         if (sb.current.recTimer) clearInterval(sb.current.recTimer);
@@ -1429,6 +1671,7 @@ const handleViewportPointerUp = (e) => {
         sb.current.historyBytes = (sb.current.historyBytes || 0) + stateStr.length;
         restore(JSON.parse(stateStr));
     };
+    useEffect(() => { gestureActions.current = { undo, redo }; });
 
 const restore = (state) => {
     deactivateBox(false);
@@ -1465,6 +1708,7 @@ const restore = (state) => {
 };
 
     const getCenterPos = () => {
+        if (dropRef.current) return { x: dropRef.current.x, y: dropRef.current.y };
         if (!fCanvas.current) return { x: window.innerWidth/2, y: window.innerHeight/2 };
         const vpt = fCanvas.current.viewportTransform; const zoom = fCanvas.current.getZoom();
         return { x: (-vpt[4] + window.innerWidth / 2) / zoom, y: (-vpt[5] + window.innerHeight / 2) / zoom };
@@ -1482,7 +1726,7 @@ const restore = (state) => {
         undo, redo, 
         toggleRecorder: () => setShowRecorder((v) => !v),
         isRecording: () => recStatus === 'recording' || recStatus === 'paused',
-        clearBoard: () => { deactivateBox(false); exitNodeEditMode(); fCanvas.current.clear(); mathLayerRef.current.innerHTML = ''; saveState(); },
+        clearBoard: () => { deactivateBox(false); exitNodeEditMode(); dismissSnapChip(); dismissMathInk(); fCanvas.current.clear(); mathLayerRef.current.innerHTML = ''; saveState(); },
         // החישוב עבר ל-Web Worker. קודם הוא רץ בחוט הראשי, וביטוי כבד הקפיא
         // את הלוח לגמרי, בלי שום דרך לבטל.
         solveActiveBox: async () => {
@@ -1512,15 +1756,49 @@ const restore = (state) => {
                 console.error('failed to write the result back into the field', uiError);
             }
         },
+        /** צובע את מה שמסומן עכשיו על הלוח, מסרגל הצבעים */
+        recolorSelection: (c) => {
+            const a = fCanvas.current?.getActiveObject();
+            if (a && !a.isEditHelper) handleColorChange(c, a);
+        },
+        hasSelection: () => { const a = fCanvas.current?.getActiveObject(); return !!a && !a.isEditHelper; },
         updateActiveColor: (newColor) => { if (sb.current.activeBox) { sb.current.activeBox.style.color = newColor; saveState(); } },
-        setSelectionType: (type) => setSelectionType(type),
+        openBoardSettings: () => {
+            setBoardSettingsPos({ x: window.innerWidth / 2, y: 90 });
+            setShowBoardSettings(true);
+        },
+        setPattern: (p) => {
+            if (!PAPER_TYPES.some((t) => t.id === p)) return;
+            setBoardPatternType(p);
+            if (onAutoSave) onAutoSave({ pattern: p });
+        },
+        /** סמל מהספרייה, במרכז המסך ועל נקודת רשת */
+        insertStamp: (id, at) => withDrop(at, () => {
+            const st = stampById(id);
+            if (!st || !fCanvas.current) return;
+            const c = getCenterPos();
+            const g = buildStamp(st, inkColor(), 2.2);
+            const snapTo = (v) => Math.round(v / (GRID / 2)) * (GRID / 2);
+            g.setPositionByOrigin(new fabric.Point(snapTo(c.x), snapTo(c.y)), 'center', 'center');
+            fCanvas.current.add(g);
+            fCanvas.current.setActiveObject(g);
+            setMode('select');
+            sb.current.wasAutoSelected = true;
+            fCanvas.current.requestRenderAll();
+            saveState();
+        }),
+        /** נוסחה כשדה עריכה, במרכז המסך — מדף הנוסחאות ומהמחשבון */
+        insertMath: (latex, at) => withDrop(at, () => insertMathAt(latex)),
+        insertPlot: (spec, at) => withDrop(at, () => insertPlot(spec)),
+        insertPolarGrid: (at) => withDrop(at, () => insertPolarGrid()),
+        insertBodeFrame: (at) => withDrop(at, () => insertBodeFrame()),
         updateGlobalFontSize: (delta) => { if (sb.current.activeBox) { let currentSize = parseFloat(sb.current.activeBox.style.fontSize) || 48; sb.current.activeBox.style.fontSize = Math.max(16, currentSize + delta) + 'px'; saveState(); } },
-        addGrid: (cols, rows) => { const center = getCenterPos(); const grid = createGridGroup(cols, rows, drawColorRef.current); grid.set({ left: center.x, top: center.y, originX: 'center', originY: 'center' }); fCanvas.current.add(grid); fCanvas.current.setActiveObject(grid); setMode('select'); fCanvas.current.requestRenderAll(); saveState(); },
+        addGrid: (cols, rows) => { const center = getCenterPos(); const grid = createGridGroup(cols, rows, inkColor()); grid.set({ left: center.x, top: center.y, originX: 'center', originY: 'center' }); fCanvas.current.add(grid); fCanvas.current.setActiveObject(grid); setMode('select'); fCanvas.current.requestRenderAll(); saveState(); },
         addImage: (dataUrl) => { const imgEl = new Image(); imgEl.onload = () => { const center = getCenterPos(); const fabricImg = new fabric.Image(imgEl); fabricImg.scaleToWidth(400); fabricImg.set({ left: center.x, top: center.y, originX: 'center', originY: 'center' }); fCanvas.current.add(fabricImg); fCanvas.current.setActiveObject(fabricImg); setMode('select'); fCanvas.current.requestRenderAll(); saveState(); }; imgEl.src = dataUrl; },
     
        addShape: (type) => { 
             const center = getCenterPos(); 
-            const obj = createShape(type, drawColorRef.current, center, getStrokeWidth()); 
+            const obj = createShape(type, inkColor(), center, penWidth()); 
             
             if (obj) { 
                 fCanvas.current.add(obj); 
@@ -1549,7 +1827,147 @@ const restore = (state) => {
         box.blur();
         if (window.mathVirtualKeyboard) window.mathVirtualKeyboard.hide();
         sb.current.activeBox = null;
+        setCasBar(null);
         if (shouldSave) saveState();
+    };
+
+    /* ── סרגל החישוב מעל תיבת נוסחה ───────────────────────────────── */
+
+    /** מצמיד את סרגל החישוב לתיבה הפעילה, מעליה או מתחתיה לפי המקום */
+    const placeCasBar = (box) => {
+        if (!box || !box.wrapper || !isMathBox(box)) return;
+        const r = box.wrapper.getBoundingClientRect();
+        const above = r.top > 110;
+        setCasBar({ x: r.left + r.width / 2, y: above ? r.top - 8 : r.bottom + 8, above });
+    };
+
+    /** נוסחה חדשה בנקודה בלוח, בגודל ובצבע הנוכחיים */
+    const insertMathAt = (latex, pos, size) => {
+        const c = pos || getCenterPos();
+        const fs = size || globalFontSize * 0.75;
+        const wrapper = createMathFieldDOM(`${c.x - (pos ? 0 : 160)}px`, `${c.y - fs * 0.7}px`, latex, `${fs}px`, textColorRef.current);
+        mathLayerRef.current.appendChild(wrapper);
+        saveState();
+        return wrapper;
+    };
+
+    /** מצייר גרף וקטורי במרכז המסך, או מתחת לנוסחה שממנה הוא נוצר */
+    const insertPlot = (spec, below) => {
+        if (!fCanvas.current) return false;
+        let sampled;
+        try { sampled = samplePlot({ ...spec, samples: 700 }); }
+        catch (e) { showToast(`לא הצלחתי לשרטט: ${e.message}`, 'warn'); return false; }
+        const xt = spec.logX ? logTicks(sampled.xmin, sampled.xmax) : niceTicks(sampled.xmin, sampled.xmax, 7).ticks;
+        const yt = niceTicks(sampled.ymin, sampled.ymax, 6).ticks;
+        const g = buildPlotGroup(sampled, { ...spec, xName: spec.xName || spec.variable }, inkColor(), {
+            ticks: { x: xt, y: yt, xLabel: tickLabel, yLabel: tickLabel },
+        });
+        const c = below || getCenterPos();
+        if (below) g.set({ left: below.x, top: below.y, originX: 'left', originY: 'top' });
+        else g.setPositionByOrigin(new fabric.Point(c.x, c.y), 'center', 'center');
+        fCanvas.current.add(g);
+        fCanvas.current.setActiveObject(g);
+        setMode('select');
+        sb.current.wasAutoSelected = true;
+        fCanvas.current.requestRenderAll();
+        saveState();
+        return true;
+    };
+
+    /** רשת קוטבית: מעגלים כל משבצת וקרניים כל 30 מעלות, עם תוויות זווית */
+    const insertPolarGrid = () => {
+        const color = inkColor();
+        const objs = [];
+        const R = 200;
+        for (let r = 40; r <= R; r += 40) {
+            objs.push(new fabric.Circle({ left: 0, top: 0, originX: 'center', originY: 'center', radius: r, fill: '', stroke: color, strokeWidth: r === R ? 1.4 : 0.8, opacity: r === R ? 0.7 : 0.35, objectCaching: false }));
+        }
+        for (let a = 0; a < 360; a += 30) {
+            const rad = (a * Math.PI) / 180;
+            objs.push(new fabric.Line([0, 0, R * Math.cos(rad), -R * Math.sin(rad)], { stroke: color, strokeWidth: a % 90 === 0 ? 1.4 : 0.7, opacity: a % 90 === 0 ? 0.8 : 0.35, objectCaching: false }));
+            objs.push(new fabric.Text(`${a}°`, {
+                left: (R + 18) * Math.cos(rad), top: -(R + 18) * Math.sin(rad), originX: 'center', originY: 'center',
+                fontSize: 13, fill: color, opacity: 0.8, fontFamily: 'Assistant, Arial, sans-serif', objectCaching: false,
+            }));
+        }
+        const g = new fabric.Group(objs, { objectCaching: false });
+        g.customType = 'polar';
+        const c = getCenterPos();
+        g.setPositionByOrigin(new fabric.Point(c.x, c.y), 'center', 'center');
+        fCanvas.current.add(g);
+        fCanvas.current.requestRenderAll();
+        saveState();
+    };
+
+    /** מסגרת בודה: גודל בדציבלים ומופע במעלות, על ציר תדר לוגריתמי משותף */
+    const insertBodeFrame = () => {
+        const color = inkColor();
+        const mk = (ymin, ymax, yName) => {
+            const sampled = { xmin: 1, xmax: 1e5, ymin, ymax, logX: true, segments: [] };
+            return buildPlotGroup(sampled, { fns: [], xName: 'ω', yName }, color, {
+                width: 520, height: 180,
+                ticks: { x: logTicks(1, 1e5), y: niceTicks(ymin, ymax, 4).ticks, xLabel: tickLabel, yLabel: tickLabel },
+            });
+        };
+        const mag = mk(-60, 20, '|H| dB');
+        const ph = mk(-180, 0, '∠H°');
+        const c = getCenterPos();
+        mag.set({ left: c.x - 260, top: c.y - 215, originX: 'left', originY: 'top' });
+        ph.set({ left: c.x - 260, top: c.y + 20, originX: 'left', originY: 'top' });
+        const labels = [
+            new fabric.Text('|H(jω)|  [dB]', { left: c.x - 250, top: c.y - 245, originX: 'left', originY: 'top', fontSize: 15, fill: color, fontFamily: 'Assistant, Arial, sans-serif' }),
+            new fabric.Text('∠H(jω)  [°]', { left: c.x - 250, top: c.y - 10, originX: 'left', originY: 'top', fontSize: 15, fill: color, fontFamily: 'Assistant, Arial, sans-serif' }),
+        ];
+        [mag, ph, ...labels].forEach((o) => fCanvas.current.add(o));
+        fCanvas.current.requestRenderAll();
+        saveState();
+    };
+
+    /**
+     * מריץ פעולת חישוב על התיבה הפעילה. התוצאה נכנסת כשורה חדשה מתחת
+     * לנוסחה, כך שכל צעד בפתרון נשאר על הלוח — כמו פתרון בכתב יד.
+     */
+    const runCasOnActive = async (action) => {
+        const box = sb.current.activeBox;
+        if (!box || !isMathBox(box)) return;
+        const latex = box.getValue('latex');
+        const ascii = box.getValue('ascii-math');
+        if (!ascii || !ascii.trim()) { showToast('התיבה ריקה', 'warn'); return; }
+        const r = box.wrapper.getBoundingClientRect();
+        const zoom = fCanvas.current.getZoom();
+        const left = parseFloat(box.wrapper.style.left) || 0;
+        const top = parseFloat(box.wrapper.style.top) || 0;
+        const below = { x: left, y: top + r.height / zoom + 14 };
+
+        if (action === 'plot') {
+            const rhs = ascii.includes('=') ? ascii.split('=').pop() : ascii;
+            const v = /(^|[^a-z])t([^a-z]|$)/i.test(rhs) && !/(^|[^a-z])x([^a-z]|$)/i.test(rhs) ? 't' : 'x';
+            const expr = rhs.replace(/\s+\(/g, '(');
+            const ok = insertPlot({ fns: [expr], variable: v, xmin: v === 't' ? 0 : -10, xmax: 10, xName: v }, { x: below.x, y: below.y + 10 });
+            if (ok) deactivateBox(false);
+            return;
+        }
+
+        setSolving(true);
+        const res = action === 'solve' ? await solveExpression(ascii) : await runCasAction(action, ascii, latex);
+        setSolving(false);
+        if (!res || !res.ok) {
+            const msg = res && res.error === 'timeout' ? 'החישוב ארך יותר מדי וקוטע. נסה לפשט את הביטוי.'
+                : res && res.error === 'not-matrix' ? 'הפעולה הזו מיועדת למטריצה'
+                    : 'לא הצלחתי לחשב את הביטוי הזה';
+            showToast(msg, 'warn');
+            return;
+        }
+        if (action === 'solve') {
+            box.setValue(`${latex} \\textcolor{#fde047}{\\; ${res.resultLatex}}`);
+            saveState();
+            return;
+        }
+        const size = parseFloat(box.style.fontSize) || globalFontSize;
+        const fs = Math.max(18, size * 0.85);
+        const wrapper = createMathFieldDOM(`${below.x}px`, `${below.y}px`, res.latex, `${fs}px`, box.style.color || textColorRef.current);
+        mathLayerRef.current.appendChild(wrapper);
+        saveState();
     };
 
     /** קריאת הערך מתיבה, בלי לדעת אם היא math-field או textarea */
@@ -1624,14 +2042,18 @@ const restore = (state) => {
         mf.addEventListener('focusin', () => {
             if (sb.current.activeBox !== mf) deactivateBox(false);
             sb.current.activeBox = mf; wrapper.classList.add('active-wrapper');
+            installEngineeringKeyboard();
             if (window.mathVirtualKeyboard) window.mathVirtualKeyboard.show();
+            placeCasBar(mf);
             setTimeout(() => { 
                 const rect = wrapper.getBoundingClientRect(); const safeHeight = window.innerHeight - 320; 
                 if (rect.bottom > safeHeight && fCanvas.current) {
                     fCanvas.current.relativePan(new fabric.Point(0, -(rect.bottom - safeHeight + 60))); syncCustomLayers();
                 }
+                placeCasBar(mf);
             }, 400); 
         });
+        mf.addEventListener('input', () => placeCasBar(mf));
         
         mf.addEventListener('input', () => { clearTimeout(sb.current.snapTimeout); sb.current.snapTimeout = setTimeout(saveState, 1000); });
         // שתי תקלות תוקנו כאן. הגרירה חישבה מיקום בפיקסלי מסך לתוך שכבה
@@ -1739,8 +2161,159 @@ const restore = (state) => {
         }
     };
 
-  const handlePointerDown = (e) => {
-       if (sb.current.isPanning || sb.current.activePointers.size >= 2) return;
+    /* ─────────────────────────────────────────────────────────────────
+     *  קלט העט: ציור, מחק, ומצבי טקסט ונוסחה
+     * ───────────────────────────────────────────────────────────────── */
+
+    /** עובי הקו של העט הנוכחי ביחידות הלוח. העובי על המסך נשאר קבוע בכל זום */
+    const penWidth = (p = penRef.current) => (p?.width || 2.5) / (fCanvas.current?.getZoom() || 1);
+
+    /** האם העט מפעיל זיהוי צורות. כתב נוסחאות וחוט מעגל מטופלים אחרת */
+    const penRecognizes = (p = penRef.current) => p && p.kind !== 'mathink' && p.kind !== 'wire';
+
+    /** סגנון אחיד לכל מה שנוצר מהעט: אטימות, קווקוו וסוג העט */
+    const applyPenStyle = (obj, p = penRef.current) => {
+        if (!obj || !p) return obj;
+        obj.set({ opacity: p.opacity ?? 1 });
+        if (p.dash && p.dash !== 'solid' && !obj.inkFilled) {
+            const sw = obj.strokeWidth || penWidth(p);
+            obj.set({ strokeDashArray: dashArrayFor(p.dash, sw) });
+            obj.dashStyle = p.dash;
+        }
+        if (p.kind === 'highlighter') obj.set({ fill: '' });
+        obj.penKind = p.kind;
+        return obj;
+    };
+
+    /** בונה צורה מזוהה בסגנון העט, וממיר קו לחץ כשהעט מוגדר עם ראש חץ */
+    const buildShapeObject = (shape, p = penRef.current) => {
+        const s = p?.arrow && shape.type === 'line' ? { ...shape, type: 'arrow', headLength: undefined } : shape;
+        return applyPenStyle(buildRecognizedShape(s, inkColor(), penWidth(p)), p);
+    };
+
+    /** מסמן לסרגל הכלים שכותבים עכשיו, כדי שיתפוגג ולא יפריע */
+    const setInking = (on) => {
+        if (on) document.body.dataset.inking = '1';
+        else delete document.body.dataset.inking;
+    };
+
+    const clearLiveCanvas = () => {
+        const cvs = drawingCanvasRef.current;
+        if (!cvs) return;
+        cvs.getContext('2d').clearRect(0, 0, cvs.width, cvs.height);
+        cvs.style.opacity = '1';
+    };
+
+    /** קו חי לעטים שאינם דיו ממולא — מדגיש, קו מקווקו וחוט — מצויר מחדש בכל תזוזה */
+    const paintLiveStroke = () => {
+        const cvs = drawingCanvasRef.current;
+        if (!cvs || !fCanvas.current) return;
+        const p = penRef.current;
+        const ctx = cvs.getContext('2d');
+        const zoom = fCanvas.current.getZoom();
+        const vpt = fCanvas.current.viewportTransform;
+        const pts = sb.current.points;
+        ctx.clearRect(0, 0, cvs.width, cvs.height);
+        if (!pts.length) return;
+        ctx.save();
+        ctx.strokeStyle = inkColor();
+        ctx.lineWidth = p.width;
+        ctx.lineCap = p.kind === 'highlighter' ? 'square' : 'round';
+        ctx.lineJoin = 'round';
+        const dash = p.kind !== 'highlighter' && p.dash !== 'solid' ? dashArrayFor(p.dash, p.width) : null;
+        ctx.setLineDash(dash || []);
+        ctx.beginPath();
+        pts.forEach((q, i) => {
+            const x = q.x * zoom + vpt[4], y = q.y * zoom + vpt[5];
+            if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+        });
+        if (pts.length === 1) ctx.lineTo(pts[0].x * zoom + vpt[4] + 0.01, pts[0].y * zoom + vpt[5]);
+        ctx.stroke();
+        ctx.restore();
+    };
+
+    /** עיגול המחק במקום העט, במקום שובל אדום — רואים בדיוק מה ייפגע */
+    const paintEraserCursor = (screenX, screenY) => {
+        const cvs = drawingCanvasRef.current;
+        if (!cvs) return;
+        const ctx = cvs.getContext('2d');
+        ctx.clearRect(0, 0, cvs.width, cvs.height);
+        const r = (eraserRef.current?.size || 16) / 2;
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(screenX, screenY, r, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,255,255,0.08)';
+        ctx.fill();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = eraserRef.current?.mode === 'stroke' ? 'rgba(248,113,113,0.9)' : 'rgba(255,255,255,0.85)';
+        ctx.stroke();
+        ctx.restore();
+    };
+
+    /**
+     * מעביר את המחק לאורך קטע אחד. במחק חלקי כל משיכה שנחתכת מוחלפת
+     * בחלקים ששרדו, באותו מקום בערימת השכבות; במחק שלם האובייקט כולו יורד.
+     */
+    const eraseAlong = (segs, radius) => {
+        const canvas = fCanvas.current;
+        if (!canvas) return;
+        const er = eraserRef.current || { mode: "pixel" };
+        const zoom = canvas.getZoom();
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const sg of segs) for (const q of [sg.a, sg.b]) {
+            minX = Math.min(minX, q.x); maxX = Math.max(maxX, q.x); minY = Math.min(minY, q.y); maxY = Math.max(maxY, q.y);
+        }
+        const objs = canvas.getObjects();
+        let changed = false;
+        for (let i = objs.length - 1; i >= 0; i--) {
+            const obj = objs[i];
+            if (obj.isEditHelper || obj === sb.current.editingOriginalObj) continue;
+            if (er.highlighterOnly && obj.penKind !== 'highlighter') continue;
+            const b = obj.getBoundingRect();
+            const pad = radius + (obj.strokeWidth || 1) * 2;
+            if (b.left > maxX + pad || b.left + b.width < minX - pad || b.top > maxY + pad || b.top + b.height < minY - pad) continue;
+
+            if (er.mode === 'stroke') {
+                let hit = false;
+                for (const sg of segs) {
+                    const L = Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y);
+                    const n = Math.max(1, Math.ceil(L / Math.max(1, radius / 2)));
+                    for (let k = 0; k <= n && !hit; k++) {
+                        const t = k / n;
+                        if (isObjectNearPoint(obj, { x: sg.a.x + (sg.b.x - sg.a.x) * t, y: sg.a.y + (sg.b.y - sg.a.y) * t }, radius)) hit = true;
+                    }
+                    if (hit) break;
+                }
+                if (hit) { canvas.remove(obj); changed = true; }
+                continue;
+            }
+
+            const pieces = eraseObjectPartially(obj, segs, radius);
+            if (pieces === null) continue;
+            if (pieces === undefined) {
+                /* דיו ישן שנשמר בלי קו אמצע — אין מה לחתוך, ולכן הוא יורד שלם */
+                if (obj.inkFilled && segs.some((sg) => isObjectNearPoint(obj, sg.b, radius))) { canvas.remove(obj); changed = true; }
+                continue;
+            }
+            const index = canvas.getObjects().indexOf(obj);
+            canvas.remove(obj);
+            if (pieces.length) canvas.insertAt(index, ...pieces);
+            changed = true;
+        }
+        if (er.mode === 'stroke' && mathLayerRef.current) {
+            const c = segs[segs.length - 1].b;
+            Array.from(mathLayerRef.current.children).forEach((wrapper) => {
+                const boxX = parseFloat(wrapper.style.left) + wrapper.offsetWidth / 2;
+                const boxY = parseFloat(wrapper.style.top) + wrapper.offsetHeight / 2;
+                if (Math.hypot(boxX - c.x, boxY - c.y) < Math.max(wrapper.offsetWidth, wrapper.offsetHeight) / 2 + radius) { wrapper.remove(); changed = true; }
+            });
+        }
+        if (changed) { sb.current.eraseChanged = true; canvas.requestRenderAll(); }
+        return zoom;
+    };
+
+    const handlePointerDown = (e) => {
+        if (sb.current.isPanning || sb.current.activePointers.size >= 2) return;
         if (sb.current.activeBox || (window.mathVirtualKeyboard && window.mathVirtualKeyboard.visible)) { deactivateBox(); return; }
         if (!e.target.closest('.context-menu') && sb.current.editCircles.length > 0) exitNodeEditMode();
 
@@ -1750,15 +2323,21 @@ const restore = (state) => {
             try { e.target.setPointerCapture(e.pointerId); } catch { /* דפדפן ללא תמיכה בלכידת מצביע */ }
         }
 
-        // שימוש בפונקציה האחידה!
         const { screenX, screenY, virtualX, virtualY } = getCanvasCoords(e.clientX, e.clientY);
         const coords = { x: virtualX, y: virtualY };
 
-        if (modeRef.current === 'select') { 
-            const target = fCanvas.current.findTarget(e.nativeEvent);
-            if (!target && sb.current.wasAutoSelected) { setMode('draw'); sb.current.wasAutoSelected = false; return; } return; 
+        // הדבקה ממתינה: ההקשה הבאה על הלוח קובעת איפה מה שהועתק ינחת
+        if (pasteArmedRef.current) {
+            setPasteArmed(false);
+            pasteAt(coords);
+            return;
         }
-        
+
+        if (modeRef.current === 'select') {
+            const target = fCanvas.current.findTarget(e.nativeEvent);
+            if (!target && sb.current.wasAutoSelected) { setMode('draw'); sb.current.wasAutoSelected = false; return; } return;
+        }
+
         if (modeRef.current === 'laser') {
             sb.current.drawing = true;
             sb.current.hasMovedEnoughToDraw = true;
@@ -1770,60 +2349,87 @@ const restore = (state) => {
             const wrapper = createTextFieldDOM(`${virtualX - 340}px`, `${virtualY}px`, '', `${Math.round(globalFontSize * 0.62)}px`, textColorRef.current);
             mathLayerRef.current.appendChild(wrapper);
             wrapper.querySelector('textarea').focus();
-
-        } else if (modeRef.current === 'math') {
+            return;
+        }
+        if (modeRef.current === 'math') {
             const wrapper = createMathFieldDOM(`${virtualX}px`, `${virtualY - 30}px`, '', `${globalFontSize}px`, textColorRef.current);
             mathLayerRef.current.appendChild(wrapper); wrapper.querySelector('math-field').focus();
+            return;
+        }
+        if (modeRef.current !== 'draw' && modeRef.current !== 'erase') return;
 
-        } else if (modeRef.current === 'draw' || modeRef.current === 'erase') {
-            sb.current.drawing = true; 
-            sb.current.hasSnapped = false; 
-            sb.current.hasMovedEnoughToDraw = false; // ← איפוס המשתנה לפני שמתחילים לצייר
-            sb.current.points = [coords]; 
-            sb.current.liveObj = null;
-            const ctx = drawingCanvasRef.current.getContext('2d'); 
-            ctx.lineCap = 'round'; ctx.lineJoin = 'round'; 
-            
-            // ניקוי הקנבס לפי הגודל הנכון שלו
-            ctx.clearRect(0, 0, drawingCanvasRef.current.width, drawingCanvasRef.current.height); 
-            if (modeRef.current === 'erase') {
-                sb.current.inkStroke = null;
-                ctx.beginPath();
-                ctx.moveTo(screenX, screenY);
-                ctx.lineTo(screenX, screenY + 0.01);
-                ctx.lineWidth = eraserSize || 20;
-                ctx.strokeStyle = 'rgba(255,0,0,0.3)';
-                ctx.stroke();
-            } else {
-                sb.current.inkStroke = createInkStroke({
-                    baseWidth: getStrokeWidth(),
-                    ...(pressureInkRef.current ? {} : { minRatio: 1, maxRatio: 1, tiltInfluence: 0, taperFloor: 1 }),
-                });
-                sb.current.inkStroke.push(samplePointer(e, virtualX, virtualY));
-            }
+        sb.current.drawing = true;
+        sb.current.hasSnapped = false;
+        sb.current.hasMovedEnoughToDraw = false;
+        sb.current.points = [coords];
+        sb.current.lastCoords = coords;
+        sb.current.liveObj = null;
+        sb.current.liveResult = null;
+        sb.current.shiftPerfect = false;
+        setInking(true);
+        if (sb.current.lastSnap) dismissSnapChip();
+        const ctx = drawingCanvasRef.current.getContext('2d');
+        ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        ctx.clearRect(0, 0, drawingCanvasRef.current.width, drawingCanvasRef.current.height);
+
+        if (modeRef.current === 'erase') {
+            sb.current.inkStroke = null;
+            sb.current.eraseLast = coords;
+            sb.current.eraseChanged = false;
+            paintEraserCursor(screenX, screenY);
+            const r = (eraserRef.current?.size || 16) / 2 / fCanvas.current.getZoom();
+            eraseAlong([{ a: coords, b: coords }], r);
+            return;
+        }
+
+        const p = penRef.current;
+        drawingCanvasRef.current.style.opacity = String(p.opacity ?? 1);
+        if (isFilledInk(p)) {
+            const pressureOff = !pressureInkRef.current && (p.kind === 'pen' || p.kind === 'lord');
+            sb.current.inkStroke = createInkStroke({
+                baseWidth: penWidth(p),
+                ...(PEN_KINDS[p.kind]?.ink || {}),
+                ...(pressureOff ? { minRatio: 1, maxRatio: 1, tiltInfluence: 0, taperFloor: 1 } : {}),
+            });
+            sb.current.inkStroke.push(samplePointer(e, virtualX, virtualY));
+        } else {
+            sb.current.inkStroke = null;
+            paintLiveStroke();
         }
     };
 
- const handlePointerMove = (e) => {
-        if (sb.current.isPanning || !sb.current.drawing || sb.current.activePointers.size >= 2) return;
+    const handlePointerMove = (e) => {
+        const perfectHeld = sb.current.perfectPointer !== undefined && sb.current.perfectPointer !== null;
+        if (sb.current.isPanning || !sb.current.drawing || (sb.current.activePointers.size >= 2 && !perfectHeld)) return;
+        if (perfectHeld && e.pointerId === sb.current.perfectPointer) return;
         if (modeRef.current === 'laser') {
             const l = getCanvasCoords(e.clientX, e.clientY);
             pushLaser(l.screenX, l.screenY);
             return;
         }
-            // ← הוסף: אל תתחיל ציור עד שזזת לפחות 5px (מונע התנגשות עם long press)
-    if (sb.current.drawing && !sb.current.hasMovedEnoughToDraw) {
-        const moved = Math.hypot(e.clientX - sb.current.longPressStartX, e.clientY - sb.current.longPressStartY);
-        if (moved < 5) return;
-        sb.current.hasMovedEnoughToDraw = true;
-    }
-        
-        // שימוש באותה פונקציה אחידה בדיוק כמו בלחיצה!
+        // אין ציור עד תזוזה של 5 פיקסלים, כדי שלחיצה ארוכה לא תשאיר נקודה
+        if (!sb.current.hasMovedEnoughToDraw) {
+            const moved = Math.hypot(e.clientX - sb.current.longPressStartX, e.clientY - sb.current.longPressStartY);
+            if (moved < 5) return;
+            sb.current.hasMovedEnoughToDraw = true;
+        }
+
         const { screenX, screenY, virtualX, virtualY } = getCanvasCoords(e.clientX, e.clientY);
         const coords = { x: virtualX, y: virtualY };
-        const zoom = fCanvas.current.getZoom(); 
-        
+        const zoom = fCanvas.current.getZoom();
+        sb.current.lastCoords = coords;
+
+        if (modeRef.current === 'erase') {
+            const r = (eraserRef.current?.size || 16) / 2 / zoom;
+            eraseAlong([{ a: sb.current.eraseLast || coords, b: coords }], r);
+            sb.current.eraseLast = coords;
+            paintEraserCursor(screenX, screenY);
+            return;
+        }
+
         if (sb.current.liveObj) {
+            // Shift במחשב עושה מה שאצבע שנייה עושה בטאבלט — צורה מושלמת
+            if (e.shiftKey && !sb.current.shiftPerfect) { sb.current.shiftPerfect = true; makeLivePerfect(); }
             fCanvas.current.remove(sb.current.liveObj);
             const next = sb.current.liveRebuild ? sb.current.liveRebuild(coords) : null;
             if (next) {
@@ -1835,17 +2441,12 @@ const restore = (state) => {
         }
 
         if (sb.current.hasSnapped) return;
-        const ctx = drawingCanvasRef.current.getContext('2d'); 
-        sb.current.points.push(coords); 
-        
-        if (modeRef.current === 'erase') {
-            ctx.lineTo(screenX, screenY);
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.moveTo(screenX, screenY);
-        } else if (sb.current.inkStroke) {
+        const ctx = drawingCanvasRef.current.getContext('2d');
+        sb.current.points.push(coords);
+
+        if (sb.current.inkStroke) {
             const vpt = fCanvas.current.viewportTransform;
-            const toScreen = (p) => ({ x: p.x * zoom + vpt[4], y: p.y * zoom + vpt[5] });
+            const toScreen = (q) => ({ x: q.x * zoom + vpt[4], y: q.y * zoom + vpt[5] });
             const steps = [];
             const native = e.nativeEvent || e;
             const coalesced = typeof native.getCoalescedEvents === 'function' ? native.getCoalescedEvents() : null;
@@ -1857,35 +2458,17 @@ const restore = (state) => {
             } else {
                 steps.push(sb.current.inkStroke.push(samplePointer(e, virtualX, virtualY)));
             }
-            for (const step of steps) paintInkStep(ctx, step, toScreen, drawColorRef.current, zoom);
+            const color = inkColor();
+            for (const step of steps) paintInkStep(ctx, step, toScreen, color, zoom);
+        } else {
+            paintLiveStroke();
         }
 
-        if (modeRef.current === 'erase') {
-            const actualEraserRadius = (eraserSize || 20) / zoom;
-            // מחיקת שדות מתמטיקה
-            Array.from(mathLayerRef.current.children).forEach(wrapper => {
-                const boxX = parseFloat(wrapper.style.left) + wrapper.offsetWidth / 2;
-                const boxY = parseFloat(wrapper.style.top) + wrapper.offsetHeight / 2;
-                if (Math.hypot(boxX - coords.x, boxY - coords.y) < Math.max(wrapper.offsetWidth, wrapper.offsetHeight) / 2 + actualEraserRadius) wrapper.remove();
-            });
-            // מחיקה לפי מגע בקו המתאר עצמו. קודם נבדקה חפיפת תיבות תוחמות,
-            // ולכן מחיקה בפינה ריקה של משולש גדול מחקה את כל המשולש.
-            const toRemove = [];
-            fCanvas.current.getObjects().forEach(obj => {
-                if (obj.isEditHelper) return;
-                if (obj === sb.current.editingOriginalObj) return;
-                if (isObjectNearPoint(obj, coords, actualEraserRadius)) toRemove.push(obj);
-            });
-            toRemove.forEach(obj => fCanvas.current.remove(obj));
-            if (toRemove.length > 0) fCanvas.current.requestRenderAll();
-            return;
-        }
-
-        // --- שטח מת למניעת שבירת הטיימר ---
+        if (!penRecognizes() || !autoSnapRef.current) return;
+        // השהיית העט במקום מבקשת צורה. תזוזה קטנה מ־2 יחידות לא מאפסת את הטיימר
         if (sb.current.points.length > 1) {
-            const lastPt = sb.current.points[sb.current.points.length - 2]; 
-            const dist = Math.hypot(coords.x - lastPt.x, coords.y - lastPt.y);
-            if (dist > 2) { // מתאפס רק אם זזת משמעותית
+            const lastPt = sb.current.points[sb.current.points.length - 2];
+            if (Math.hypot(coords.x - lastPt.x, coords.y - lastPt.y) > 2) {
                 clearTimeout(sb.current.snapTimeout);
                 sb.current.snapTimeout = setTimeout(() => runRecognition('dwell'), 400);
             }
@@ -1899,6 +2482,7 @@ const restore = (state) => {
         if (e && e.pointerType !== 'pen' && e.target && e.target.releasePointerCapture) {
             try { e.target.releasePointerCapture(e.pointerId); } catch { /* המצביע כבר שוחרר */ }
         }
+        if (e && sb.current.perfectPointer === e.pointerId) return;
 
         if (modeRef.current === 'laser') {
             // הזנב ממשיך לדעוך מעצמו אחרי ההרמה, ואין מה לשמור
@@ -1906,12 +2490,12 @@ const restore = (state) => {
             return;
         }
 
-        if (sb.current.isPanning) return; 
+        if (sb.current.isPanning) { setInking(false); return; }
+        const p = penRef.current;
         if (sb.current.liveObj) {
             const obj = sb.current.liveObj;
-           sb.current.liveObj = null;
-            // המעבר האוטומטי לבחר בוטל כדי לא להפריע לציור
-            // #2: שומרים מצב ביניים עם הדיו הגולמי לפני הצורה המיושרת
+            sb.current.liveObj = null;
+            // מצב ביניים עם הדיו הגולמי לפני הצורה, כדי שביטול ראשון יחזיר אליו
             const rawInk = sb.current.pendingRawInk; sb.current.pendingRawInk = null;
             if (rawInk) {
                 fCanvas.current.remove(obj);
@@ -1920,17 +2504,20 @@ const restore = (state) => {
                 fCanvas.current.remove(rawInk);
                 fCanvas.current.add(obj);
             }
+            if (p?.kind === 'highlighter') placeBelowInk(obj);
             saveState();
-            // #1: לא נכנסים אוטומטית לעריכה — המשתמש יבחר את הצורה בלחיצה
+            showSnapChip(obj, sb.current.liveResult, sb.current.liveVariantIndex, rawInk);
         } else if (sb.current.drawing && !sb.current.hasSnapped && modeRef.current === 'draw') {
-            // עד כה משיכה שהורמה מיד נשארה תמיד דיו גולמי, והמשתמש היה חייב
-            // לעצור את העט באוויר 400 מילי־שניות כדי לקבל צורה נקייה.
-            if (!(autoSnapRef.current && runRecognition('lift'))) convertToScribble();
+            if (p.kind === 'wire') finishWire();
+            else if (p.kind === 'highlighter') finishHighlighter();
+            else if (p.kind === 'mathink') finishMathInk();
+            else convertToScribble();   // הרמה בלי השהיה אף פעם לא מיישרת
         }
-        if (modeRef.current === 'erase') saveState();
+        if (modeRef.current === 'erase' && sb.current.eraseChanged) saveState();
         sb.current.drawing = false; sb.current.points = []; sb.current.liveRebuild = null; clearTimeout(sb.current.snapTimeout);
-        const cvs = drawingCanvasRef.current;
-        if (cvs) cvs.getContext('2d').clearRect(0, 0, cvs.width, cvs.height);
+        sb.current.inkStroke = null;
+        clearLiveCanvas();
+        setInking(false);
     };
 
     /**
@@ -1939,7 +2526,7 @@ const restore = (state) => {
      * וכל שאר הצורות משנות גודל באופן אחיד סביב המרכז.
      */
     const makeLiveRebuild = (result, anchor) => {
-        const rebuild = (shape) => buildRecognizedShape(shape, drawColorRef.current, getStrokeWidth());
+        const rebuild = (shape) => buildShapeObject(shape);
 
         if (result.type === 'line') {
             const start = { ...result.start };
@@ -1962,7 +2549,7 @@ const restore = (state) => {
                 cp: { x: 2 * mid.x - 0.5 * start.x - 0.5 * c.x, y: 2 * mid.y - 0.5 * start.y - 0.5 * c.y },
             });
         }
-        if (result.type === 'rect' && Math.abs(result.angle || 0) < 1e-6) {
+        if (result.type === 'rect' && Math.abs(result.angle || 0) < 1e-6 && !result.square) {
             const anchorX = anchor.x > result.cx ? result.cx - result.width / 2 : result.cx + result.width / 2;
             const anchorY = anchor.y > result.cy ? result.cy - result.height / 2 : result.cy + result.height / 2;
             const offX = (anchor.x > result.cx ? result.cx + result.width / 2 : result.cx - result.width / 2) - anchor.x;
@@ -1978,7 +2565,7 @@ const restore = (state) => {
             };
         }
 
-        // שינוי גודל אחיד — עובד לכל צורה, כולל מצולעים ומלבנים מסובבים
+        // שינוי גודל אחיד — עובד לכל צורה, כולל ריבוע, מצולעים ומלבנים מסובבים
         const center = result.type === 'polygon' || result.type === 'polyline'
             ? result.points.reduce((a, q) => ({ x: a.x + q.x / result.points.length, y: a.y + q.y / result.points.length }), { x: 0, y: 0 })
             : { x: result.cx, y: result.cy };
@@ -2002,13 +2589,32 @@ const restore = (state) => {
     };
 
     /**
+     * אצבע שנייה בזמן שהעט מחזיק צורה חיה: הצורה קופצת לפירוש המושלם
+     * שלה — ריבוע, מעגל, משולש שווה צלעות — וממשיכה לעקוב אחרי העט.
+     */
+    const makeLivePerfect = () => {
+        const res = sb.current.liveResult;
+        if (!res || !res.variants || !res.variants.length || !sb.current.liveObj) return;
+        if (sb.current.liveVariantIndex === 0) return;
+        const shape = res.variants[0].shape;
+        sb.current.liveVariantIndex = 0;
+        fCanvas.current.remove(sb.current.liveObj);
+        sb.current.liveObj = buildShapeObject(shape);
+        fCanvas.current.add(sb.current.liveObj);
+        sb.current.liveRebuild = makeLiveRebuild(shape, sb.current.lastCoords || sb.current.points[sb.current.points.length - 1]);
+        fCanvas.current.requestRenderAll();
+        try { navigator.vibrate?.(8); } catch { /* אין רטט */ }
+    };
+
+    /**
      * מריץ את מנוע הזיהוי על המשיכה הנוכחית.
      * trigger הוא 'dwell' כשהמשתמש עצר את העט במקום ובכך ביקש המרה, או
      * 'lift' כשהעט הורם. בהרמה הספים מחמירים, כדי שכתב יד קטן יישאר דיו.
      */
     const runRecognition = (trigger) => {
-        if (!fCanvas.current || modeRef.current === 'erase') return false;
+        if (!fCanvas.current || modeRef.current !== 'draw' || !penRecognizes()) return false;
         if (!sb.current.points || sb.current.points.length < 5) return false;
+        const p = penRef.current;
 
         const zoom = fCanvas.current.getZoom() || 1;
         const strict = trigger === 'lift';
@@ -2017,76 +2623,349 @@ const restore = (state) => {
             minSpan: strict ? 58 : 30,
             minStrokeLength: strict ? 95 : 45,
             minConfidence: strict ? 0.75 : 0.62,
+            snapLevel: snapLevelRef.current,
         });
         if (!result) return false;
+        // מדגיש מתיישר רק לקו ישר. ריבוע מדגיש הוא כמעט תמיד טעות
+        if (p.kind === 'highlighter' && result.type !== 'line') return false;
 
-        const obj = buildRecognizedShape(result, drawColorRef.current, getStrokeWidth());
+        const obj = buildShapeObject(result);
         if (!obj) return false;
 
         sb.current.hasSnapped = true;
 
-        // #2: לוכדים את הדיו הגולמי לפני היישור, כדי שאפשר יהיה לחזור אליו ב"בטל"
+        // לוכדים את הדיו הגולמי לפני היישור, כדי שאפשר יהיה לחזור אליו
         const rawInk = buildInkPathObject();
-
-        const cvs = drawingCanvasRef.current;
-        if (cvs) cvs.getContext('2d').clearRect(0, 0, cvs.width, cvs.height);
+        clearLiveCanvas();
+        if (sb.current.drawing) drawingCanvasRef.current.style.opacity = String(p.opacity ?? 1);
 
         if (trigger === 'dwell' && sb.current.drawing) {
             // הצורה נולדת מתחת לעט, והמשתמש ממשיך לעצב אותה עד ההרמה
             sb.current.liveObj = obj;
+            sb.current.liveResult = result;
+            sb.current.liveVariantIndex = result.variantIndex;
             sb.current.pendingRawInk = rawInk;
             sb.current.liveRebuild = makeLiveRebuild(result, sb.current.points[sb.current.points.length - 1]);
             fCanvas.current.add(obj);
         } else {
-            // #2: קודם שומרים מצב היסטוריה עם הדיו הגולמי, ורק אחריו את הצורה המיושרת.
-            // כך "בטל" ראשון מחזיר את הדיו לפני היישור, ו"בטל" שני מוחק אותו.
+            // קודם מצב היסטוריה עם הדיו הגולמי, ורק אחריו הצורה המיושרת —
+            // כך "בטל" ראשון מחזיר את הדיו לפני היישור
             if (rawInk) {
                 fCanvas.current.add(rawInk);
                 saveState(); flushHistory();
                 fCanvas.current.remove(rawInk);
             }
             fCanvas.current.add(obj);
+            if (p.kind === 'highlighter') placeBelowInk(obj);
             saveState();
-            // #1: הצורה לא נבחרת אוטומטית — המשתמש בוחר אותה בלחיצה עליה
+            showSnapChip(obj, result, result.variantIndex, rawInk);
         }
         fCanvas.current.requestRenderAll();
         sb.current.points = [];
         return true;
     };
 
-    // בונה אובייקט דיו גולמי מהמשיכה הנוכחית, בלי להוסיף אותו ללוח ובלי לאפס דבר.
+    /** ראש חץ בקצה המשיכה, לפי כיוון הקטע האחרון שלה */
+    const arrowHeadPath = (pts, width) => {
+        if (pts.length < 2) return '';
+        const end = pts[pts.length - 1];
+        let k = pts.length - 2;
+        const minBack = width * 5;
+        while (k > 0 && Math.hypot(end.x - pts[k].x, end.y - pts[k].y) < minBack) k--;
+        const ang = Math.atan2(end.y - pts[k].y, end.x - pts[k].x);
+        const head = Math.max(width * 4.5, 9 / (fCanvas.current?.getZoom() || 1));
+        const a1 = ang + Math.PI - Math.PI / 7, a2 = ang + Math.PI + Math.PI / 7;
+        const p1 = { x: end.x + head * Math.cos(a1), y: end.y + head * Math.sin(a1) };
+        const p2 = { x: end.x + head * Math.cos(a2), y: end.y + head * Math.sin(a2) };
+        return ` M ${end.x} ${end.y} L ${p1.x} ${p1.y} L ${p2.x} ${p2.y} Z`;
+    };
+
+    /** אובייקט דיו מהמשיכה הנוכחית, בסגנון העט, בלי להוסיף אותו ללוח */
     const buildInkPathObject = () => {
         const zoom = fCanvas.current ? (fCanvas.current.getZoom() || 1) : 1;
-        const color = drawColorRef.current;
+        const p = penRef.current;
+        const color = inkColor();
         let pathObj = null;
 
         if (sb.current.inkStroke && !sb.current.inkStroke.isEmpty) {
-            const pathData = sb.current.inkStroke.toPathData();
+            let pathData = sb.current.inkStroke.toPathData();
             if (pathData) {
+                if (p.arrow) pathData += arrowHeadPath(sb.current.inkStroke.nodes, penWidth(p));
                 pathObj = new fabric.Path(pathData, {
                     fill: color, stroke: null, strokeWidth: 0,
                     strokeLineJoin: 'round', selectable: true, objectCaching: false,
                 });
                 pathObj.customType = 'ink';
                 pathObj.inkFilled = true;
+                pathObj.inkNodes = sb.current.inkStroke.nodesFlat();
             }
         }
 
         if (!pathObj) {
             if (!sb.current.points || sb.current.points.length < 2) return null;
-            const pathData = buildInkPath(sb.current.points, 0.9 / zoom);
+            let pathData = buildInkPath(sb.current.points, 0.9 / zoom);
             if (!pathData) return null;
-            pathObj = new fabric.Path(pathData, { fill: 'transparent', stroke: color, strokeWidth: getStrokeWidth(), strokeLineCap: 'round', strokeLineJoin: 'round', selectable: true });
+            if (p.arrow) pathData += arrowHeadPath(sb.current.points, penWidth(p)).replace(' Z', '');
+            pathObj = new fabric.Path(pathData, {
+                fill: '', stroke: color, strokeWidth: penWidth(p),
+                strokeLineCap: p.kind === 'highlighter' ? 'square' : 'round', strokeLineJoin: 'round', selectable: true, objectCaching: false,
+            });
             pathObj.customType = 'ink';
         }
-        return pathObj;
+        return applyPenStyle(pathObj, p);
     };
 
     const convertToScribble = () => {
         const pathObj = buildInkPathObject();
-        if (!pathObj) { sb.current.points = []; sb.current.inkStroke = null; return; }
+        if (!pathObj) { sb.current.points = []; sb.current.inkStroke = null; return null; }
         fCanvas.current.add(pathObj); fCanvas.current.requestRenderAll(); saveState();
         sb.current.points = []; sb.current.inkStroke = null;
+        return pathObj;
+    };
+
+    /**
+     * מדגיש נצבע מתחת לכתב, כמו טוש על נייר: הוא נכנס לערימה ממש מתחת
+     * לאובייקט הנמוך ביותר שהוא חוצה, ולא מעליו.
+     */
+    const placeBelowInk = (obj) => {
+        const canvas = fCanvas.current;
+        const objs = canvas.getObjects();
+        const b = obj.getBoundingRect();
+        let target = -1;
+        for (let i = 0; i < objs.length; i++) {
+            const o = objs[i];
+            if (o === obj || o.isEditHelper || o.penKind === 'highlighter') continue;
+            const t = typeOf(o);
+            if (t === 'image' || o.customType === 'plot' || t === 'group') continue;
+            const ob = o.getBoundingRect();
+            if (ob.left > b.left + b.width || ob.left + ob.width < b.left || ob.top > b.top + b.height || ob.top + ob.height < b.top) continue;
+            target = i;
+            break;
+        }
+        const cur = objs.indexOf(obj);
+        if (target >= 0 && target < cur) canvas.moveObjectTo(obj, target);
+    };
+
+    /** מדגיש: אם המשיכה כמעט ישרה היא מתיישרת לקו, ואופקית לגמרי כשהיא קרובה לאופק */
+    const finishHighlighter = () => {
+        const pts = sb.current.points;
+        const zoom = fCanvas.current.getZoom() || 1;
+        if (pts.length >= 2) {
+            const lf = fitLine(pts);
+            if (pts.length > 4 && lf.span > 24 / zoom && lf.rms / lf.span < 0.035) {
+                let { start, end } = lf;
+                const ang = Math.atan2(end.y - start.y, end.x - start.x);
+                const dev = Math.abs(Math.sin(ang));
+                if (dev < Math.sin((8 * Math.PI) / 180)) {
+                    const y = (start.y + end.y) / 2;
+                    start = { x: start.x, y }; end = { x: end.x, y };
+                }
+                sb.current.points = [start, end];
+            }
+        }
+        const obj = convertToScribble();
+        if (obj) { placeBelowInk(obj); fCanvas.current.requestRenderAll(); }
+    };
+
+    /**
+     * חוט מעגל: המשיכה מפושטת, כל קטע הופך לאופקי או לאנכי, והקודקודים
+     * נצמדים לחצי משבצת — כך שהחוט מתחבר בדיוק להדקי הרכיבים מהספרייה.
+     */
+    const finishWire = () => {
+        const zoom = fCanvas.current.getZoom() || 1;
+        const raw = sb.current.points;
+        if (!raw || raw.length < 2) { sb.current.points = []; return; }
+        const step = GRID / 2;
+        const snap = (v) => Math.round(v / step) * step;
+        const simp = simplifyRDP(raw, 7 / zoom);
+        const out = [{ x: snap(simp[0].x), y: snap(simp[0].y) }];
+        for (let i = 1; i < simp.length; i++) {
+            const cur = out[out.length - 1];
+            const q = simp[i];
+            const dx = q.x - simp[i - 1].x, dy = q.y - simp[i - 1].y;
+            const next = Math.abs(dx) >= Math.abs(dy) ? { x: snap(q.x), y: cur.y } : { x: cur.x, y: snap(q.y) };
+            if (next.x === cur.x && next.y === cur.y) continue;
+            const prev = out[out.length - 2];
+            // שני קטעים באותו כיוון מתאחדים לקטע אחד
+            if (prev && ((prev.x === cur.x && cur.x === next.x) || (prev.y === cur.y && cur.y === next.y))) out[out.length - 1] = next;
+            else out.push(next);
+        }
+        if (out.length < 2) {
+            // קו קצר מחצי משבצת — נשמר כדיו רגיל, כדי שלא ייעלם
+            convertToScribble();
+            return;
+        }
+        const p = penRef.current;
+        const obj = new fabric.Polyline(out, {
+            fill: '', stroke: inkColor(), strokeWidth: penWidth(p),
+            strokeLineJoin: 'round', strokeLineCap: 'round', selectable: true, objectCaching: false,
+        });
+        obj.customType = 'polyline';
+        obj.wire = true;
+        applyPenStyle(obj, p);
+        fCanvas.current.add(obj);
+        fCanvas.current.requestRenderAll();
+        saveState();
+        sb.current.points = [];
+    };
+
+    /* ── פירושים חלופיים לצורה שזוהתה ─────────────────────────────── */
+
+    const placeSnapChip = () => {
+        const snap = sb.current.lastSnap;
+        if (!snap || !fCanvas.current) return;
+        const b = snap.obj.getBoundingRect();
+        const zoom = fCanvas.current.getZoom();
+        const vpt = fCanvas.current.viewportTransform;
+        const x = (b.left + b.width / 2) * zoom + vpt[4];
+        const top = b.top * zoom + vpt[5];
+        const bottom = (b.top + b.height) * zoom + vpt[5];
+        const above = top > 130;
+        setSnapChip((c) => (c ? { ...c, x, y: above ? top - 12 : bottom + 12, above } : c));
+    };
+
+    /** מציג את השבב עם כל הפירושים, ליד הצורה שזה עתה נוצרה */
+    const showSnapChip = (obj, result, index, rawInk) => {
+        if (!result || !result.variants || result.variants.length < 2) { sb.current.lastSnap = null; setSnapChip(null); return; }
+        sb.current.lastSnap = { obj, variants: result.variants, rawInk, pen: penRef.current };
+        clearTimeout(sb.current.snapChipTimer);
+        sb.current.snapChipTimer = setTimeout(dismissSnapChip, 6500);
+        setSnapChip({ variants: result.variants.map((v) => ({ key: v.key, label: v.label })), index, x: 0, y: -999 });
+        requestAnimationFrame(placeSnapChip);
+    };
+
+    const dismissSnapChip = () => {
+        clearTimeout(sb.current.snapChipTimer);
+        sb.current.lastSnap = null;
+        setSnapChip(null);
+    };
+
+    /** החלפת הצורה בפירוש אחר — או חזרה לכתב היד המקורי, כשה־index הוא ‎-1 */
+    const chooseSnapVariant = (index) => {
+        const snap = sb.current.lastSnap;
+        if (!snap || !fCanvas.current) return;
+        const canvas = fCanvas.current;
+        let next;
+        if (index < 0) {
+            if (!snap.rawInk) return;
+            next = snap.rawInk;
+            snap.rawInk = null;
+        } else {
+            const savedPen = penRef.current;
+            penRef.current = snap.pen || savedPen;
+            next = buildShapeObject(snap.variants[index].shape, penRef.current);
+            penRef.current = savedPen;
+        }
+        const at = canvas.getObjects().indexOf(snap.obj);
+        if (at < 0) { dismissSnapChip(); return; }
+        if (sb.current.editingOriginalObj === snap.obj) exitNodeEditMode();
+        canvas.remove(snap.obj);
+        canvas.insertAt(at, next);
+        canvas.requestRenderAll();
+        snap.obj = next;
+        saveState();
+        if (index < 0) { dismissSnapChip(); return; }
+        clearTimeout(sb.current.snapChipTimer);
+        sb.current.snapChipTimer = setTimeout(dismissSnapChip, 6500);
+        setSnapChip((c) => (c ? { ...c, index } : c));
+        requestAnimationFrame(placeSnapChip);
+    };
+
+    /* ── כתב יד מתמטי ─────────────────────────────────────────────── */
+
+    /**
+     * משיכה של כתב נוסחאות נשמרת כדיו רגיל ומצטרפת ל"סשן". אחרי שנייה
+     * בלי כתיבה הסשן כולו נשלח לזיהוי, והתוצאה מוצגת מעליו להמרה בהקשה.
+     * משיכה רחוקה פותחת סשן חדש, כדי ששתי נוסחאות לא יתערבבו.
+     */
+    const finishMathInk = () => {
+        const obj = convertToScribble();
+        if (!obj) return;
+        obj.mathInk = true;
+        const sess = sb.current.mathSession;
+        const b = obj.getBoundingRect();
+        if (sess && sess.objs.length) {
+            const u = unionBounds(sess.objs.filter((o) => fCanvas.current.getObjects().includes(o)));
+            const reach = Math.max(60, u.height * 1.3) ;
+            const near = b.left < u.left + u.width + reach && b.left + b.width > u.left - reach && b.top < u.top + u.height + reach * 0.6 && b.top + b.height > u.top - reach * 0.6;
+            if (near) sess.objs.push(obj);
+            else sb.current.mathSession = { objs: [obj] };
+        } else {
+            sb.current.mathSession = { objs: [obj] };
+        }
+        sb.current.mathSeq = (sb.current.mathSeq || 0) + 1;
+        setInkChip(null);
+        clearTimeout(sb.current.mathTimer);
+        sb.current.mathTimer = setTimeout(() => runMathRecognition(sb.current.mathSession), 1100);
+    };
+
+    const sessionScreenPos = (objs) => {
+        const u = unionBounds(objs);
+        const zoom = fCanvas.current.getZoom();
+        const vpt = fCanvas.current.viewportTransform;
+        const x = (u.left + u.width / 2) * zoom + vpt[4];
+        const top = u.top * zoom + vpt[5];
+        const above = top > 130;
+        return { x, y: above ? top - 12 : (u.top + u.height) * zoom + vpt[5] + 12, above };
+    };
+
+    const runMathRecognition = async (sess) => {
+        if (!sess || !fCanvas.current) return;
+        const objs = sess.objs.filter((o) => fCanvas.current.getObjects().includes(o));
+        if (!objs.length) return;
+        const seq = (sb.current.mathSeq = (sb.current.mathSeq || 0) + 1);
+        setInkChip({ state: 'busy', ...sessionScreenPos(objs) });
+        const res = await recognizeInk(objs);
+        if (seq !== sb.current.mathSeq || sb.current.mathSession !== sess) return;
+        if (!res.ok) {
+            console.warn('math ink recognition failed:', res.error);
+            setInkChip({ state: 'error', error: res.error, ...sessionScreenPos(objs) });
+            return;
+        }
+        let html;
+        try { html = katex.renderToString(res.latex, { throwOnError: false }); } catch { html = res.latex; }
+        setInkChip({ state: 'ready', latex: res.latex, html, ...sessionScreenPos(objs) });
+    };
+
+    /** החלפת כתב היד בשדה נוסחה עם ה־LaTeX שזוהה, באותו מקום ובאותו גודל */
+    const acceptMathInk = (focus = false) => {
+        const sess = sb.current.mathSession;
+        const chip = inkChip;
+        if (!sess || !chip || !chip.latex) return;
+        const objs = sess.objs.filter((o) => fCanvas.current.getObjects().includes(o));
+        if (!objs.length) { setInkChip(null); return; }
+        const u = unionBounds(objs);
+        const color = objs[0].fill && objs[0].fill !== '' ? objs[0].fill : (objs[0].stroke || textColorRef.current);
+        const size = Math.max(22, Math.min(110, u.height * 0.62));
+        objs.forEach((o) => fCanvas.current.remove(o));
+        const wrapper = createMathFieldDOM(`${u.left}px`, `${u.top + u.height / 2 - size * 0.9}px`, chip.latex, `${size}px`, color);
+        mathLayerRef.current.appendChild(wrapper);
+        fCanvas.current.requestRenderAll();
+        sb.current.mathSession = null;
+        setInkChip(null);
+        saveState();
+        if (focus) setTimeout(() => wrapper.querySelector('math-field')?.focus(), 30);
+    };
+
+    const dismissMathInk = () => {
+        sb.current.mathSession = null;
+        sb.current.mathSeq = (sb.current.mathSeq || 0) + 1;
+        clearTimeout(sb.current.mathTimer);
+        setInkChip(null);
+    };
+
+    /** המרת כתב יד שנבחר בבחירה לנוסחה — מכל עט, לא רק מכתב נוסחאות */
+    const convertSelectionToMath = (target) => {
+        if (!target) return;
+        const t = typeOf(target);
+        const objs = t === 'activeselection' ? target.getObjects() : [target];
+        const ink = objs.filter((o) => o.customType === 'ink' || o.customType === 'line' || o.customType === 'polyline' || o.customType === 'curve');
+        if (!ink.length) { showToast('אפשר להמיר לנוסחה רק כתב יד', 'warn'); return; }
+        fCanvas.current.discardActiveObject();
+        setContextMenu({ visible: false, x: 0, y: 0, target: null });
+        const sess = { objs: ink };
+        sb.current.mathSession = sess;
+        runMathRecognition(sess);
     };
 
     // ─── #3: עזרי בחירת אזור בעזרת עט (lasso) ───
@@ -2156,13 +3035,20 @@ const restore = (state) => {
         fCanvas.current.requestRenderAll();
     };
 
-    const handleColorChange = (c) => {
-        const t = contextMenu.target;
+    const handleColorChange = (c, target = contextMenu.target) => {
+        const t = target;
         if (!t) return;
         
         const applyColor = (obj) => {
+            const t = typeOf(obj);
             if (obj.inkFilled) { obj.set('fill', c); if (obj.strokeWidth) obj.set('stroke', c); }
-            else obj.set('stroke', c);
+            else if (t.includes('text')) obj.set('fill', c);
+            else if (t === 'group') obj.getObjects().forEach(applyColor);
+            else {
+                obj.set('stroke', c);
+                // חלקים מלאים בסמלים — ראש חץ, משולש של דיודה — מקבלים גם הם את הצבע
+                if (obj.fill && obj.fill !== '' && obj.fill !== 'transparent' && obj.fill !== SHAPE_FILL) obj.set('fill', c);
+            }
         };
 
         let newTarget = t;
@@ -2177,7 +3063,7 @@ const restore = (state) => {
             newTarget = sel; 
         } else if (tType === 'group') {
             t.getObjects().forEach(applyColor);
-            if (typeof t.addWithUpdate === 'function') t.addWithUpdate();
+            t.set('dirty', true);
         } else {
             applyColor(t);
         }
@@ -2223,97 +3109,158 @@ const restore = (state) => {
         setContextMenu(prev => ({ ...prev, target: newTarget }));
     };
 
-   const handleCopy = () => { 
-        if (contextMenu.target) { 
-            // מוודאים שאנחנו מעתיקים את הצורה המקורית אם היא בעריכה
-            const targetToCopy = sb.current.editingOriginalObj || contextMenu.target;
-            
-            const processClone = (cloned) => {
-                // מחזירים לאטימות מלאה למקרה שהצורה הועתקה באמצע עריכה
-                cloned.set({ opacity: 1, selectable: true, evented: true, hasControls: true });
-                sb.current.clipboard = cloned;
-                // סוגר את התפריט רק אחרי שההעתקה הסתיימה בהצלחה
-                setContextMenu({ visible: false, x: 0, y: 0, target: null });
-            };
+    /* ── העתקה, הדבקה ושכפול ──────────────────────────────────────── */
 
-            // תומך ב-Fabric v6 (Promise) וב-v5 (Callback) + חובה להעתיק את תעודת הזהות!
-            const result = targetToCopy.clone(['customType']);
-            if (result && typeof result.then === 'function') {
-                result.then(processClone);
-            } else {
-                targetToCopy.clone(processClone, ['customType']);
-            }
-        }
+    /** האובייקט האמיתי מאחורי יעד התפריט — הצורה המקורית, כשהיא בעריכת קודקודים */
+    const realTarget = (t) => (t && sb.current.editingOriginalObj && t === sb.current.editingOriginalObj ? sb.current.editingOriginalObj : t);
+
+    /** שיבוט שתומך גם ב־Promise של Fabric 6 ומעלה וגם ב־callback של גרסה 5 */
+    const cloneObj = (obj) => new Promise((resolve) => {
+        const r = obj.clone(EXTRA_PROPS);
+        if (r && typeof r.then === 'function') r.then(resolve);
+        else obj.clone(resolve, EXTRA_PROPS);
+    });
+
+    /** העתקה ללוח הגזירים הפנימי. עובד גם על בחירה מרובה */
+    const copyObject = async (target) => {
+        const t = realTarget(target);
+        if (!t) return false;
+        const cloned = await cloneObj(t);
+        cloned.set({ opacity: t.opacity ?? 1, selectable: true, evented: true, hasControls: true });
+        if (sb.current.editingOriginalObj === t) cloned.set({ opacity: 1 });
+        sb.current.clipboard = cloned;
+        setPasteChip(true);
+        clearTimeout(sb.current.pasteChipTimer);
+        sb.current.pasteChipTimer = setTimeout(() => setPasteChip(false), 9000);
+        return true;
     };
 
-   const handlePaste = () => { 
-        if (sb.current.clipboard) { 
-            const processPaste = (cloned) => { 
-                fCanvas.current.discardActiveObject(); 
-                
-                // מזיזים את ההדבקה קצת ימינה ולמטה כדי שלא תסתיר את המקור
-                cloned.set({ left: cloned.left + 30, top: cloned.top + 30, evented: true, selectable: true, opacity: 1 }); 
-                fCanvas.current.add(cloned); 
-                sb.current.clipboard.top += 30; 
-                sb.current.clipboard.left += 30; 
-                
-                // ─── התוספת שלנו לחווית משתמש מושלמת ───
-                setMode('select'); 
-                sb.current.wasAutoSelected = true;
-                // ─────────────────────────────────────────
-
-             // הוספת הצורה החדשה מיד עם עיגולים כחולים (רק אם היא תומכת בזה)
-                if (cloned.customType && isSmartShape(cloned)) {
-                    enterNodeEditMode(cloned);
-                } else {
-                    fCanvas.current.setActiveObject(cloned);
-                }
-                
-                fCanvas.current.requestRenderAll(); 
-                saveState();
-            };
-            
-            // תמיכה ב-Promises והעתקת ה-customType גם בזמן ההדבקה
-            const result = sb.current.clipboard.clone(['customType']);
-            if (result && typeof result.then === 'function') {
-                result.then(processPaste);
-            } else {
-                sb.current.clipboard.clone(processPaste, ['customType']);
-            }
-        } 
-        setContextMenu(prev => ({...prev, visible: false})); 
+    /**
+     * הדבקה כך שמרכז מה שהועתק נוחת בדיוק בנקודה. בלי נקודה — קצת ימינה
+     * ולמטה מהמקור, כדי שההעתק לא יסתיר אותו.
+     */
+    const pasteAt = async (point) => {
+        const clip = sb.current.clipboard;
+        if (!clip || !fCanvas.current) return;
+        const canvas = fCanvas.current;
+        const cloned = await cloneObj(clip);
+        canvas.discardActiveObject();
+        exitNodeEditMode();
+        if (point) cloned.setPositionByOrigin(new fabric.Point(point.x, point.y), 'center', 'center');
+        else {
+            cloned.set({ left: cloned.left + 30, top: cloned.top + 30 });
+            clip.set({ left: clip.left + 30, top: clip.top + 30 });
+        }
+        cloned.set({ evented: true, selectable: true });
+        if (typeOf(cloned) === 'activeselection') {
+            cloned.canvas = canvas;
+            const kids = cloned.getObjects ? cloned.getObjects() : [];
+            kids.forEach((o) => canvas.add(o));
+            cloned.setCoords();
+            canvas.setActiveObject(cloned);
+        } else {
+            canvas.add(cloned);
+            canvas.setActiveObject(cloned);
+        }
+        setMode('select');
+        sb.current.wasAutoSelected = true;
+        canvas.requestRenderAll();
+        saveState();
     };
 
-    const handleDuplicate = () => {
-        if (contextMenu.target) {
-            const targetToCopy = sb.current.editingOriginalObj || contextMenu.target;
-            const processClone = (cloned) => {
-                cloned.set({ opacity: 1, selectable: true, evented: true, hasControls: true, left: cloned.left + 30, top: cloned.top + 30 });
-                fCanvas.current.discardActiveObject();
-                fCanvas.current.add(cloned);
-                setMode('select');
-                if (cloned.customType && isSmartShape(cloned)) enterNodeEditMode(cloned);
-                else fCanvas.current.setActiveObject(cloned);
-                fCanvas.current.requestRenderAll();
-                saveState();
-                setContextMenu(prev => ({...prev, visible: false}));
-            };
-            const result = targetToCopy.clone(['customType']);
-            if (result && typeof result.then === 'function') result.then(processClone);
-            else targetToCopy.clone(processClone, ['customType']);
+    const handleCopy = async () => {
+        if (!contextMenu.target) return;
+        await copyObject(contextMenu.target);
+        setContextMenu({ visible: false, x: 0, y: 0, target: null });
+        showToast('הועתק. לחיצה ארוכה על הלוח תדביק בדיוק שם');
+    };
+
+    const handleDuplicate = async () => {
+        const t = realTarget(contextMenu.target);
+        if (!t) return;
+        const prevClip = sb.current.clipboard;
+        await copyObject(t);
+        await pasteAt(null);
+        sb.current.clipboard = prevClip || sb.current.clipboard;
+        setContextMenu((prev) => ({ ...prev, visible: false }));
+    };
+
+    const handleDeleteTarget = () => {
+        const t = contextMenu.target;
+        if (!t) return;
+        const objToDelete = sb.current.editingOriginalObj || t;
+        exitNodeEditMode();
+        if (typeOf(t) === 'activeselection') {
+            const kids = t.getObjects();
+            fCanvas.current.discardActiveObject();
+            kids.forEach((o) => fCanvas.current.remove(o));
+        } else {
+            fCanvas.current.remove(objToDelete);
+            fCanvas.current.remove(t);
+            fCanvas.current.discardActiveObject();
         }
+        fCanvas.current.requestRenderAll();
+        saveState();
+        setContextMenu((prev) => ({ ...prev, visible: false }));
     };
 
     const handleGroupToggle = () => {
-        if (!contextMenu.target) return;
-        if (contextMenu.target.type === 'activeSelection') contextMenu.target.toGroup();
-        else if (contextMenu.target.type === 'group') contextMenu.target.toActiveSelection();
+        const t = contextMenu.target;
+        if (!t) return;
+        const canvas = fCanvas.current;
+        const type = typeOf(t);
+        if (type === 'activeselection') {
+            const kids = t.getObjects();
+            canvas.discardActiveObject();
+            kids.forEach((o) => canvas.remove(o));
+            const g = new fabric.Group(kids);
+            canvas.add(g);
+            canvas.setActiveObject(g);
+        } else if (type === 'group' && !t.customType) {
+            const kids = t.removeAll ? t.removeAll() : t.getObjects();
+            canvas.remove(t);
+            kids.forEach((o) => canvas.add(o));
+            canvas.setActiveObject(new fabric.ActiveSelection(kids, { canvas }));
+        }
+        canvas.requestRenderAll();
+        saveState();
+        setContextMenu((prev) => ({ ...prev, visible: false }));
+    };
+
+    /** סיבוב ברבע סיבוב והיפוך — הכרחיים לסידור רכיבים במעגל */
+    const handleRotate = (deg) => {
+        const t = realTarget(contextMenu.target);
+        if (!t) return;
+        exitNodeEditMode();
+        const c = t.getCenterPoint();
+        t.rotate(((t.angle || 0) + deg) % 360);
+        t.setPositionByOrigin(c, 'center', 'center');
+        t.setCoords();
         fCanvas.current.requestRenderAll();
         saveState();
-        setContextMenu(prev => ({...prev, visible: false}));
+    };
+    const handleFlip = () => {
+        const t = realTarget(contextMenu.target);
+        if (!t) return;
+        exitNodeEditMode();
+        t.set('flipX', !t.flipX);
+        fCanvas.current.requestRenderAll();
+        saveState();
+    };
+    const handleLayer = (front) => {
+        const t = realTarget(contextMenu.target);
+        if (!t) return;
+        if (front) fCanvas.current.bringObjectToFront(t); else fCanvas.current.sendObjectToBack(t);
+        fCanvas.current.requestRenderAll();
+        saveState();
+        setContextMenu((prev) => ({ ...prev, visible: false }));
     };
 
     const patternColorRGB = getPatternContrastColor(boardColor);
+    // פרטי היעד של תפריט ההקשר, מחושבים פעם אחת לרינדור
+    const cmTarget = contextMenu.visible ? contextMenu.target : null;
+    const cmType = cmTarget ? typeOf(cmTarget) : '';
+    const cmHasInk = cmTarget ? (cmType === 'activeselection' ? cmTarget.getObjects() : [cmTarget]).some((o) => o.customType === 'ink') : false;
     const handleViewportPointerCancel = (e) => {
     // שים לב: לא מנקים את sb.current.longPressTimer כאן!
     // pointercancel מגיע לפני שהטיימר יורה — אם ננקה אותו, long press לא יעבוד לעולם
@@ -2360,17 +3307,22 @@ const restore = (state) => {
                 math-field::part(container) { background-color: transparent !important; box-shadow: none !important; border: none !important; }
                 math-field::part(virtual-keyboard-toggle) { display: none !important; }
                 .math-box { outline: none !important; }
-                .cm-btn { background: rgba(255,255,255,0.1); border: none; color: white; padding: 6px 12px; border-radius: 6px; cursor: pointer; transition: 0.2s; }
-                .cm-btn:hover { background: rgba(255,255,255,0.2); }
+                .cm-btn { display: flex; align-items: center; justify-content: center; gap: 6px; background: rgba(255,255,255,0.07); border: none; color: #e4e4e7; padding: 7px 10px; border-radius: 9px; cursor: pointer; transition: 0.15s; font-size: 13px; }
+                .cm-btn:hover { background: rgba(255,255,255,0.15); }
+                .cm-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+                .cm-row { display: flex; justify-content: space-between; align-items: center; }
+                .cm-accent { background: rgba(74,222,128,0.14); color: #4ade80; }
+                .cm-danger { color: #f87171; background: rgba(248,113,113,0.1); }
             `}</style>
             
    {showBoardSettings && (
     <>
        <div data-ui style={{ position: 'fixed', inset: 0, zIndex: 10000 }}
              onPointerDown={(e) => { e.stopPropagation(); setShowBoardSettings(false); setRevisions(null); }} />
-        <div data-ui dir="rtl" style={{
+        <div data-ui data-scrollable dir="rtl" style={{
             position: 'fixed',
-            top: Math.min(boardSettingsPos.y, window.innerHeight - 520),
+            top: Math.max(10, Math.min(boardSettingsPos.y, window.innerHeight - 560)),
+            maxHeight: 'calc(100vh - 20px)', overflowY: 'auto',
             left: Math.max(10, Math.min(boardSettingsPos.x - 130, window.innerWidth - 280)),
             zIndex: 10001,
             background: 'rgba(18, 18, 20, 0.97)',
@@ -2421,12 +3373,7 @@ const restore = (state) => {
             <div style={{ marginBottom: '18px' }}>
                 <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '10px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>סוג לוח</div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
-                    {[
-                        { type: 'none', label: 'חלק', icon: '◻' },
-                        { type: 'grid', label: 'משובץ', icon: '▦' },
-                        { type: 'lines', label: 'שורות', icon: '≡' },
-                        { type: 'dots', label: 'נקודות', icon: '⠿' },
-                    ].map(opt => (
+                    {PAPER_TYPES.map(({ id, label }) => ({ type: id, label, icon: { none: '◻', grid: '▦', engineering: '▦', lines: '≡', dots: '⠿', isometric: '◬', semilog: '⫼' }[id] })).map(opt => (
                         <button key={opt.type} onClick={() => setBoardPatternType(opt.type)} style={{
                             padding: '9px 12px', borderRadius: '10px', border: 'none',
                             background: boardPatternType === opt.type ? 'rgba(74,222,128,0.15)' : 'rgba(255,255,255,0.05)',
@@ -2458,7 +3405,7 @@ const restore = (state) => {
                         display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px',
                     }}
                 >
-                    <span>המרה אוטומטית בהרמת העט</span>
+                    <span>יישור צורה כשמשאירים את העט</span>
                     <span style={{
                         width: '34px', height: '20px', borderRadius: '10px', flexShrink: 0, padding: '2px',
                         background: autoSnap ? '#4ade80' : 'rgba(255,255,255,0.18)',
@@ -2469,7 +3416,32 @@ const restore = (state) => {
                     </span>
                 </button>
                 <div style={{ fontSize: '11px', color: '#71717a', marginTop: '7px', lineHeight: 1.5 }}>
-                    כשהמתג כבוי הצורה תיווצר רק אם תשהה את העט לרגע בסוף המשיכה. כך אפשר לכתוב בכתב יד בלי שהאותיות יומרו.
+                    הצורה מיושרת רק אם משאירים את העט במקום לרגע בסוף המשיכה. אם מרימים את העט מיד, הקו נשאר כפי שנכתב. כשהמתג כבוי אין יישור בכלל.
+                </div>
+                <div style={{ fontSize: '11px', color: '#71717a', margin: '14px 0 8px', fontWeight: 600 }}>יישור צורות</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '5px' }}>
+                    {SNAP_LEVELS.map((lv) => (
+                        <button key={lv.id} onClick={() => { setSnapLevel(lv.id); if (onAutoSave) onAutoSave({ snapLevel: lv.id }); }} style={{
+                            padding: '8px 4px', borderRadius: '10px', border: 'none', cursor: 'pointer', fontSize: '12px',
+                            background: snapLevel === lv.id ? 'rgba(74,222,128,0.15)' : 'rgba(255,255,255,0.05)',
+                            color: snapLevel === lv.id ? '#4ade80' : '#a1a1aa',
+                            outline: snapLevel === lv.id ? '1px solid rgba(74,222,128,0.35)' : 'none',
+                        }}>{lv.label}</button>
+                    ))}
+                </div>
+                <div style={{ fontSize: '11px', color: '#71717a', marginTop: '7px', lineHeight: 1.5 }}>
+                    {SNAP_LEVELS.find((l) => l.id === snapLevel)?.hint} בכל רמה אפשר לעבור בין הפירושים בהקשה על השבב שמופיע מעל הצורה, 
+                </div>
+            </div>
+
+            {/* זיהוי כתב יד מתמטי — מודל שרץ במכשיר */}
+            <div style={{ marginBottom: '16px' }}>
+                <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '10px', fontWeight: 600, letterSpacing: '0.05em' }}>זיהוי נוסחאות בכתב יד</div>
+                <div style={{ fontSize: '12px', color: '#a1a1aa', lineHeight: 1.5 }}>
+                    {mathInkState.state === 'ready' && 'המודל מוכן ועובד גם בלי רשת.'}
+                    {mathInkState.state === 'loading' && `מוריד את המודל… ${Math.round((mathInkState.progress || 0) * 100)}%`}
+                    {mathInkState.state === 'error' && 'ההורדה נכשלה. צריך חיבור לרשת בפעם הראשונה.'}
+                    {mathInkState.state === 'idle' && 'המודל רץ במכשיר עצמו, בלי שרת ובלי מפתח. בשימוש הראשון יורדים כ־80 מגה־בייט, פעם אחת.'}
                 </div>
             </div>
 
@@ -2586,62 +3558,118 @@ const restore = (state) => {
             )}
 
             {contextMenu.visible && (
-                <div data-ui className="context-menu" dir="rtl" style={{ position: 'fixed', top: contextMenu.y, left: contextMenu.x, zIndex: 10000, background: 'rgba(28, 28, 30, 0.95)', backdropFilter: 'blur(20px)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px', padding: '12px', boxShadow: '0 10px 30px rgba(0,0,0,0.5)', color: 'white', display: 'flex', flexDirection: 'column', gap: '10px', minWidth: '150px' }}>
-                    {contextMenu.target ? (
+                <div data-ui className="context-menu" dir="rtl" style={{ position: 'fixed', top: Math.max(10, Math.min(contextMenu.y, window.innerHeight - 330)), left: Math.max(10, Math.min(contextMenu.x, window.innerWidth - 250)), zIndex: 10000, background: 'rgba(24, 24, 27, 0.97)', backdropFilter: 'blur(20px)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '14px', padding: '12px', boxShadow: '0 16px 40px rgba(0,0,0,0.55)', color: 'white', display: 'flex', flexDirection: 'column', gap: '9px', width: '232px' }}>
+                    {cmTarget && (
                         <>
-                          <div style={{fontSize: '12px', color: '#aaa', fontWeight: 'bold'}}>ערוך צורה</div>
-                            
-                            <div style={{display: 'flex', gap: '6px', justifyContent: 'center', alignItems: 'center'}}>
-                                {['#f5f5f5', '#fde047', '#4ade80', '#22d3ee', '#f472b6'].map(c => (
-                                    <button key={c} onClick={() => handleColorChange(c)} style={{background: c, width: '22px', height: '22px', borderRadius: '50%', border: 'none', cursor: 'pointer'}} /> 
+                            <div style={{display: 'flex', gap: '6px', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap'}}>
+                                {['#f5f5f5', '#1a1a1a', '#fde047', '#4ade80', '#38bdf8', '#f472b6', '#fb923c'].map(c => (
+                                    <button key={c} onClick={() => handleColorChange(c)} aria-label={`צבע ${c}`} style={{background: c, width: '22px', height: '22px', borderRadius: '50%', border: '1px solid rgba(255,255,255,0.25)', cursor: 'pointer'}} />
                                 ))}
-                                
-                                {/* ── פלטת צבעים מותאמת אישית ── */}
                                 <label title="צבע מותאם אישית" style={{ position: 'relative', cursor: 'pointer' }}>
-                                    <div style={{
-                                        width: '22px', height: '22px', borderRadius: '50%',
-                                        background: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)',
-                                        border: '1px solid rgba(255,255,255,0.3)',
-                                        display: 'flex', alignItems: 'center', justifyContent: 'center'
-                                    }} />
-                                    <input 
-                                        type="color" 
-                                        value={contextMenu.target?.stroke || '#ffffff'} 
-                                        onChange={e => handleColorChange(e.target.value)} 
-                                        style={{ position: 'absolute', opacity: 0, inset: 0, cursor: 'pointer', width: '100%', height: '100%' }} 
-                                    />
+                                    <div style={{ width: '22px', height: '22px', borderRadius: '50%', background: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)', border: '1px solid rgba(255,255,255,0.3)' }} />
+                                    <input type="color" value={typeof cmTarget.stroke === 'string' && cmTarget.stroke.startsWith('#') ? cmTarget.stroke : '#ffffff'} onChange={e => handleColorChange(e.target.value)}
+                                        style={{ position: 'absolute', opacity: 0, inset: 0, cursor: 'pointer', width: '100%', height: '100%' }} />
                                 </label>
                             </div>
-
-                            <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-                                <span style={{fontSize: '14px'}}>עובי קו:</span>
+                            <div className="cm-row">
+                                <span style={{fontSize: '13px', color: '#a1a1aa'}}>עובי</span>
                                 <div style={{display: 'flex', gap: '4px'}}>
-                                    <button onClick={() => handleThicknessChange(-1)} className="cm-btn" style={{padding: '2px 8px'}}>-</button>
-                                    <button onClick={() => handleThicknessChange(1)} className="cm-btn" style={{padding: '2px 8px'}}>+</button>
+                                    <button onClick={() => handleThicknessChange(-1)} className="cm-btn" aria-label="דק יותר">−</button>
+                                    <button onClick={() => handleThicknessChange(1)} className="cm-btn" aria-label="עבה יותר">+</button>
                                 </div>
                             </div>
-                            <div style={{display: 'flex', gap: '8px'}}>
-                                <button onClick={handleCopy} className="cm-btn" style={{flex: 1}}>העתק</button>
-                                <button onClick={handleDuplicate} className="cm-btn" style={{flex: 1}}>שכפל</button>
-                                <button onClick={handleDeleteTarget} className="cm-btn" style={{flex: 1, color: '#ef4444', backgroundColor: 'rgba(239, 68, 68, 0.1)'}}>מחק</button>
+                            <div className="cm-grid">
+                                <button onClick={handleCopy} className="cm-btn"><Icon name="copy" size={15} /> העתק</button>
+                                <button onClick={handleDuplicate} className="cm-btn"><Icon name="plus" size={15} /> שכפל</button>
+                                <button onClick={() => handleRotate(90)} className="cm-btn"><Icon name="rotate" size={15} /> סובב 90°</button>
+                                <button onClick={handleFlip} className="cm-btn"><Icon name="flip" size={15} /> היפוך</button>
+                                <button onClick={() => handleLayer(true)} className="cm-btn"><Icon name="to-front" size={15} /> לחזית</button>
+                                <button onClick={() => handleLayer(false)} className="cm-btn"><Icon name="to-front" size={15} /> לרקע</button>
                             </div>
-                            {(contextMenu.target.type === 'activeSelection' || contextMenu.target.type === 'group') && (
-                                <button onClick={handleGroupToggle} className="cm-btn" style={{width: '100%', marginTop: '8px'}}>
-                                    {contextMenu.target.type === 'activeSelection' ? 'אגד קבוצה' : 'פרק קבוצה'}
+                            {cmHasInk && (
+                                <button onClick={() => convertSelectionToMath(cmTarget)} className="cm-btn cm-accent">
+                                    <Icon name="sigma" size={15} /> המר כתב יד לנוסחה
                                 </button>
                             )}
-                        </>
-                    ) : (
-                        <>
-                            <div style={{fontSize: '12px', color: '#aaa', fontWeight: 'bold'}}>פעולות לוח</div>
-                            <button onClick={handlePaste} className="cm-btn">הדבק צורה</button>
-                            <button onClick={() => {
-                                setContextMenu(prev => ({...prev, visible: false}));
-                                setBoardSettingsPos({ x: contextMenu.x, y: contextMenu.y });
-                                setShowBoardSettings(true);
-                            }} className="cm-btn" style={{marginTop: '4px'}}>הגדרות לוח (צבע/רשת)</button>
+                            {(cmType === 'activeselection' || (cmType === 'group' && !cmTarget.customType)) && (
+                                <button onClick={handleGroupToggle} className="cm-btn">
+                                    {cmType === 'activeselection' ? 'אגד לקבוצה' : 'פרק קבוצה'}
+                                </button>
+                            )}
+                            <button onClick={handleDeleteTarget} className="cm-btn cm-danger"><Icon name="trash" size={15} /> מחק</button>
                         </>
                     )}
+                    {!cmTarget && (
+                        <>
+                            <div style={{fontSize: '12px', color: '#aaa', fontWeight: 'bold'}}>פעולות לוח</div>
+                            <button className="cm-btn" onClick={() => {
+                                const mp = sb.current.menuPoint;
+                                setContextMenu((prev) => ({ ...prev, visible: false }));
+                                pasteAt(mp ? toScene(mp.x, mp.y) : null);
+                            }}><Icon name="paste" size={15} /> הדבק כאן</button>
+                            <button className="cm-btn" onClick={() => {
+                                setContextMenu((prev) => ({ ...prev, visible: false }));
+                                setBoardSettingsPos({ x: contextMenu.x, y: contextMenu.y });
+                                setShowBoardSettings(true);
+                            }}>הגדרות לוח</button>
+                        </>
+                    )}
+                </div>
+            )}
+
+            {/* ── פירושים לצורה שזוהתה ── */}
+            {snapChip && (
+                <div data-ui className="board-chip" dir="rtl" role="toolbar" aria-label="פירושים לצורה"
+                    style={{ left: Math.max(10, Math.min(window.innerWidth - 10, snapChip.x)), top: snapChip.y, transform: `translate(-50%, ${snapChip.above ? '-100%' : '0'})` }}>
+                    {snapChip.variants.map((v, i) => (
+                        <button key={v.key} className={snapChip.index === i ? 'on' : ''} onClick={() => chooseSnapVariant(i)}>{v.label}</button>
+                    ))}
+                    <span className="chip-sep" />
+                    <button onClick={() => chooseSnapVariant(-1)} title="ביטול היישור — חזרה לכתב היד המקורי">כתב יד</button>
+                    <button onClick={dismissSnapChip} aria-label="סגור"><Icon name="close" size={13} /></button>
+                </div>
+            )}
+
+            {/* ── זיהוי נוסחה בכתב יד ── */}
+            {inkChip && (
+                <div data-ui className="board-chip" dir="rtl" role="status"
+                    style={{ left: Math.max(10, Math.min(window.innerWidth - 10, inkChip.x)), top: inkChip.y, transform: `translate(-50%, ${inkChip.above ? '-100%' : '0'})` }}>
+                    {inkChip.state === 'busy' && (
+                        mathInkState.state === 'loading'
+                            ? <><span className="chip-label">מוריד את מודל הזיהוי, פעם אחת בלבד</span><span className="chip-progress"><span style={{ width: `${Math.round((mathInkState.progress || 0) * 100)}%` }} /></span></>
+                            : <span className="chip-label">מזהה את הנוסחה…</span>
+                    )}
+                    {inkChip.state === 'error' && <><span className="chip-label">לא הצלחתי לזהות. {inkChip.error === 'worker' || mathInkState.state === 'error' ? 'בשימוש הראשון צריך רשת.' : 'נסה לכתוב גדול יותר.'}</span><button onClick={() => runMathRecognition(sb.current.mathSession)}>נסה שוב</button><button onClick={dismissMathInk} aria-label="סגור"><Icon name="close" size={13} /></button></>}
+                    {inkChip.state === 'ready' && (
+                        <>
+                            <span className="chip-tex" dir="ltr" dangerouslySetInnerHTML={{ __html: inkChip.html }} />
+                            <button className="primary" onClick={() => acceptMathInk(false)}><Icon name="check" size={14} /> המר</button>
+                            <button onClick={() => acceptMathInk(true)} title="המר ופתח לעריכה">ערוך</button>
+                            <button onClick={dismissMathInk} title="השאר כתב יד" aria-label="השאר כתב יד"><Icon name="close" size={13} /></button>
+                        </>
+                    )}
+                </div>
+            )}
+
+            {/* ── הדבקה ── */}
+            {pasteChip && (
+                <div data-ui className="board-chip" dir="rtl" style={{ left: '50%', bottom: 92, transform: 'translateX(-50%)' }}>
+                    <span className="chip-label"><Icon name="copy" size={14} /> הועתק</span>
+                    <button className={pasteArmed ? 'on' : ''} onClick={() => setPasteArmed((v) => !v)}>
+                        <Icon name="paste" size={14} /> {pasteArmed ? 'הקש על הלוח במקום הרצוי' : 'הדבק במקום שאבחר'}
+                    </button>
+                    <button onClick={() => { setPasteChip(false); setPasteArmed(false); }} aria-label="סגור"><Icon name="close" size={13} /></button>
+                </div>
+            )}
+
+            {/* ── סרגל החישוב מעל תיבת נוסחה ── */}
+            {casBar && (
+                <div data-ui className="board-chip cas-bar" dir="ltr" role="toolbar" aria-label="פעולות חישוב"
+                    onPointerDown={(e) => e.preventDefault()}
+                    style={{ left: Math.max(10, Math.min(window.innerWidth - 10, casBar.x)), top: casBar.y, transform: `translate(-50%, ${casBar.above ? '-100%' : '0'})` }}>
+                    {CAS_ACTIONS.map((a) => (
+                        <button key={a.id} className={a.he ? 'he' : ''} title={a.title} onClick={() => runCasOnActive(a.id)}>{a.label}</button>
+                    ))}
                 </div>
             )}
 
@@ -2652,19 +3680,12 @@ const restore = (state) => {
     transition: '0.5s background'
 }}>
 
-{boardPatternType !== 'none' && (
-    <div ref={patternBgRef} style={{ /* הוספנו כאן את ה-ref */
+    {/* שכבת הרקע. הגודל והמיקום מתעדכנים עם המצלמה ב־syncCustomLayers */}
+    <div ref={patternBgRef} style={{
         position: 'absolute', inset: 0, zIndex: 0, pointerEvents: 'none',
-        backgroundImage:
-            boardPatternType === 'grid'
-                ? `linear-gradient(rgba(${patternColorRGB}, 0.15) 1px, transparent 1px), linear-gradient(90deg, rgba(${patternColorRGB}, 0.15) 1px, transparent 1px)`
-            : boardPatternType === 'lines'
-                ? `linear-gradient(rgba(${patternColorRGB}, 0.15) 1px, transparent 1px)`
-            : `radial-gradient(circle, rgba(${patternColorRGB}, 0.45) 1.5px, transparent 1.5px)`,
-        backgroundSize: `${gridSize}px ${gridSize}px`,
-        backgroundPosition: '0px 0px', /* נקודת התחלה חיונית לחישוב */
+        backgroundImage: patternStyle(boardPatternType, patternColorRGB, 1).image,
+        backgroundSize: patternStyle(boardPatternType, patternColorRGB, 1).size,
     }} />
-)}
                 <div style={{ position: 'absolute', top: 0, left: 0, zIndex: 1, width: '100%', height: '100%' }}>
                     <canvas id="fabric-canvas" ref={fabricCanvasElRef} />
                 </div>

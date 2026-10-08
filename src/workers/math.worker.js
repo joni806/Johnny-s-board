@@ -3,10 +3,10 @@
  * nerdamer יכול לרוץ שניות ארוכות, ולפני כן הוא רץ בחוט הראשי והקפיא את
  * הלוח באמצע כתיבה. כאן הוא מבודד, והלקוח יכול גם לקטוע אותו בכוח.
  */
-import { solveAsciiMath } from '../utils/solveMath.js';
+import { solveAsciiMath, runCas } from '../utils/solveMath.js';
 
 self.onmessage = (event) => {
-    const { id, expr } = event.data || {};
-    const result = solveAsciiMath(expr || '');
+    const { id, expr, action, latex } = event.data || {};
+    const result = action ? runCas(action, expr || '', latex || '') : solveAsciiMath(expr || '');
     self.postMessage({ id, ...result });
 };
