@@ -8,7 +8,7 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "node tests/recognition.test.mjs && node tests/variants.test.mjs && node tests/eraser.test.mjs && node tests/stem.test.mjs && node tests/ink.test.mjs && node tests/storage.test.mjs && node tests/shapes.test.mjs && node tests/device.test.mjs",
+    "test": "node tests/recognition.test.mjs && node tests/variants.test.mjs && node tests/eraser.test.mjs && node tests/stem.test.mjs && node tests/ink.test.mjs && node tests/storage.test.mjs && node tests/shapes.test.mjs && node tests/device.test.mjs && node tests/scribble.test.mjs",
     "test:stress": "node tests/stress.mjs",
     "test:e2e": "node tests/smoke.test.mjs && node tests/features.test.mjs"
   },

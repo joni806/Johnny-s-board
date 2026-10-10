@@ -50,6 +50,7 @@ const SHORTCUTS = [
     ['Delete', 'מחיקת הבחירה'],
     ['לחיצה ארוכה על הלוח', 'הגדרות הלוח, ואחרי העתקה גם הדבקה במקום הלחיצה'],
     ['השהיית העט בסוף קו', 'הפיכת משיכה לצורה. ״בטל״ מחזיר לכתב יד'],
+    ['קישקוש על כתב', 'מוחק אותו, כשהאפשרות פעילה בעוד או בהגדרות הלוח'],
     ['כפתור הצד של S Pen', 'מחזיקים וכותבים: מחק כברירת מחדל. ניתן לשינוי בהגדרות הלוח'],
     ['אצבע אחת, כשכותבים בעט', 'הזזת הלוח. כף היד על המסך לא מציירת'],
     ['שתי אצבעות', 'הקשה מבטלת, גרירה מזיזה, צביטה מגדילה'],
@@ -510,6 +511,7 @@ export default function Toolbar({
                         <button onClick={() => { onPresent?.(); setPop(null); }}><Icon name="present" size={16} /> מצב הצגה עם לייזר</button>
                         <button onClick={() => { act('toggleRecorder'); setPop(null); }}><Icon name="mic" size={16} /> הקלטה מסונכרנת</button>
                         <button onClick={() => { onDrive?.(); setPop(null); }}><Icon name="drive" size={16} /> גוגל דרייב</button>
+                        <button onClick={() => { act('toggleScratchErase'); setPop(null); }}><Icon name="erase" size={16} /> מחיקה בקישקוש: הדלק או כבה</button>
                         <button onClick={() => { act('openBoardSettings'); setPop(null); }}><Icon name="settings" size={16} /> הגדרות הלוח ועט S Pen</button>
                         <button onClick={() => { setShowHelp(true); setPop(null); }}><Icon name="keyboard" size={16} /> מחוות וקיצורים</button>
                     </div>

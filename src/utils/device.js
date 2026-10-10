@@ -30,6 +30,8 @@ export const defaultDevicePrefs = () => ({
     penSeen: false,
     penButton: 'erase',
     lowLatency: false,
+    /** קישקוש על כתב מוחק אותו */
+    scratchErase: true,
 });
 
 export const sanitizeDevicePrefs = (raw) => {
@@ -39,6 +41,7 @@ export const sanitizeDevicePrefs = (raw) => {
     out.penSeen = raw.penSeen === true;
     if (PEN_BUTTON_ACTIONS.some((a) => a.id === raw.penButton)) out.penButton = raw.penButton;
     out.lowLatency = raw.lowLatency === true;
+    if (raw.scratchErase === false) out.scratchErase = false;
     return out;
 };
 
@@ -66,7 +69,7 @@ export const isPenOnly = (prefs) => (prefs.penOnly === null ? prefs.penSeen : pr
 export const isEraserTip = (e) => e?.pointerType === 'pen' && ((e.buttons & 32) !== 0 || e.button === 5);
 
 /** כפתור הצד של העט לחוץ */
-export const isBarrelPressed = (e) => e?.pointerType === 'pen' && ((e.buttons & 2) !== 0 || e.button === 2);
+export const isBarrelPressed = (e) => e?.pointerType === 'pen' && ((e.buttons & 6) !== 0 || e.button === 2 || e.button === 1);
 
 /**
  * האם העט נוגע במסך. בריחוף עם כפתור לחוץ חלק מהדפדפנים שולחים

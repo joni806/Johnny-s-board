@@ -8,6 +8,7 @@ import {
 } from '../utils/canvasUtils';
 import { recognizeShape, buildInkPath, fitLine, simplifyRDP } from '../utils/recognition';
 import { createInkStroke, samplePointer, paintInkStep } from '../utils/ink';
+import { detectScribble } from '../utils/scribble';
 import { PEN_KINDS, inkColorOn, dashArrayFor, isFilledInk, loadPenState, buildPens } from '../utils/pens';
 import {
     PEN_BUTTON_ACTIONS, HOLD_ACTIONS, loadDevicePrefs, saveDevicePrefs, isPenOnly,
@@ -182,6 +183,10 @@ const Board = forwardRef(({
     const [devicePrefs, setDevicePrefs] = useState(loadDevicePrefs);
     const devicePrefsRef = useRef(devicePrefs);
     useEffect(() => { devicePrefsRef.current = devicePrefs; saveDevicePrefs(devicePrefs); }, [devicePrefs]);
+    // יומן אירועי העט, לבדיקה מה הטאבלט שולח כשלוחצים על הכפתור
+    const [penDebug, setPenDebug] = useState(false);
+    const [penLog, setPenLog] = useState([]);
+    useEffect(() => { sb.current.penDebug = penDebug; }, [penDebug]);
     const updateDevicePrefs = (patch) => setDevicePrefs((p) => ({ ...p, ...patch }));
     // שבבים צפים: זיהוי נוסחה, הדבקה, וסרגל החישוב
     const [inkChip, setInkChip] = useState(null);
@@ -616,6 +621,18 @@ window.addEventListener('pointercancel', handleGlobalPointerGone);
         const penTrack = (e) => {
             if (e.pointerType !== 'pen') return;
             sb.current.lastPenAt = e.timeStamp;
+            // מצב כפתור הצד נלמד גם מריחוף: בטאבלטים רבים הכפתור נלחץ לפני המגע,
+            // ואירוע ה־pointerdown עצמו מגיע בלי הביט שלו
+            if (e.type === 'pointermove') sb.current.barrelHeld = (e.buttons & 6) !== 0;
+            else if (e.type === 'pointerup' || e.type === 'pointercancel') sb.current.barrelHeld = false;
+            else if (isBarrelPressed(e)) sb.current.barrelHeld = true;
+            if (sb.current.penDebug) {
+                const sig = `${e.type}|${e.button}|${e.buttons}`;
+                if (sig !== sb.current.penDebugSig || e.type !== 'pointermove') {
+                    sb.current.penDebugSig = sig;
+                    setPenLog((l) => [`${e.type.replace('pointer', '')}  button=${e.button}  buttons=${e.buttons}  p=${(e.pressure || 0).toFixed(2)}`, ...l].slice(0, 9));
+                }
+            }
             if (e.type === 'pointerdown') sb.current.penDown = true;
             else if (e.type === 'pointerup' || e.type === 'pointercancel') sb.current.penDown = false;
             if (!devicePrefsRef.current.penSeen) {
@@ -625,7 +642,12 @@ window.addEventListener('pointercancel', handleGlobalPointerGone);
             }
         };
         // עט שנוגע במסך לא מעלה את תפריט ההקשר של הדפדפן, גם עם כפתור הצד
-        const penContextMenu = (e) => { if (e.pointerType === 'pen' || sb.current.penDown) e.preventDefault(); };
+        const penContextMenu = (e) => {
+            if (e.pointerType === 'pen' || sb.current.penDown) {
+                e.preventDefault();
+                if (sb.current.penDebug) setPenLog((l) => [`contextmenu  pointerType=${e.pointerType}`, ...l].slice(0, 9));
+            }
+        };
         for (const t of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) window.addEventListener(t, penTrack, { capture: true, passive: true });
         window.addEventListener('contextmenu', penContextMenu);
         window.addEventListener('pointerdown', gDown, true);
@@ -717,7 +739,8 @@ window.removeEventListener('pointercancel', handleGlobalPointerGone);
     }
 
     // כפתור הצד של העט, או קצה מחק: המשיכה מנותבת לכלי שהוגדר לכפתור
-    if (e.pointerType === 'pen' && (isBarrelPressed(e) || isEraserTip(e))) {
+    const barrel = e.pointerType === 'pen' && (isBarrelPressed(e) || sb.current.barrelHeld);
+    if (e.pointerType === 'pen' && (barrel || isEraserTip(e))) {
         const action = isEraserTip(e) ? 'erase' : devicePrefsRef.current.penButton;
         if (action !== 'none') {
             e.stopPropagation();
@@ -1974,6 +1997,14 @@ const restore = (state) => {
         },
         hasSelection: () => { const a = fCanvas.current?.getActiveObject(); return !!a && !a.isEditHelper; },
         updateActiveColor: (newColor) => { if (sb.current.activeBox) { sb.current.activeBox.style.color = newColor; saveState(); } },
+        /** מדליק או מכבה מחיקה בקישקוש. מחזיר את המצב החדש */
+        toggleScratchErase: () => {
+            const next = !devicePrefsRef.current.scratchErase;
+            devicePrefsRef.current = { ...devicePrefsRef.current, scratchErase: next };
+            updateDevicePrefs({ scratchErase: next });
+            showToast(next ? 'מחיקה בקישקוש: פעילה' : 'מחיקה בקישקוש: כבויה');
+            return next;
+        },
         openBoardSettings: () => {
             setBoardSettingsPos({ x: window.innerWidth / 2, y: 60 });
             setShowBoardSettings(true);
@@ -2736,7 +2767,7 @@ const restore = (state) => {
             if (p.kind === 'wire') finishWire();
             else if (p.kind === 'highlighter') finishHighlighter();
             else if (p.kind === 'mathink') finishMathInk();
-            else convertToScribble();   // הרמה בלי השהיה אף פעם לא מיישרת
+            else if (!tryScratchErase()) convertToScribble();   // הרמה בלי השהיה אף פעם לא מיישרת
         }
         // הדגל מתאפס אחרי השמירה. אחרת כל הקשה בהמשך במצב מחק שמרה שוב
         // ומחקה את מחסנית ה"בצע שוב"
@@ -2944,6 +2975,32 @@ const restore = (state) => {
             pathObj.customType = 'ink';
         }
         return applyPenStyle(pathObj, p);
+    };
+
+    /**
+     * קישקוש על כתב קיים מוחק אותו. רק משיכה שחותכת לפחות עצם אחד נחשבת;
+     * קישקוש על שטח ריק נשאר דיו רגיל, כך שציור של קפיץ או של הצללה לא נעלם.
+     */
+    const tryScratchErase = () => {
+        const p = penRef.current;
+        if (!devicePrefsRef.current.scratchErase || !fCanvas.current || (p.kind !== 'pen' && p.kind !== 'lord')) return false;
+        const pts = sb.current.points;
+        const zoom = fCanvas.current.getZoom() || 1;
+        const hit = detectScribble(pts.map((q) => ({ x: q.x * zoom, y: q.y * zoom })));
+        if (!hit) return false;
+        const victims = fCanvas.current.getObjects().filter((obj) => {
+            if (obj.isEditHelper || obj === sb.current.editingOriginalObj) return false;
+            let n = 0;
+            for (let i = 0; i < pts.length; i += 2) if (isObjectNearPoint(obj, pts[i], 8 / zoom) && ++n >= 3) return true;
+            return false;
+        });
+        if (!victims.length) return false;
+        victims.forEach((o) => fCanvas.current.remove(o));
+        fCanvas.current.requestRenderAll();
+        sb.current.points = []; sb.current.inkStroke = null;
+        saveState();
+        try { navigator.vibrate?.(10); } catch { /* אין רטט */ }
+        return true;
     };
 
     const convertToScribble = () => {
@@ -3684,6 +3741,18 @@ const restore = (state) => {
                     {' '}אם הכפתור פותח את Air command של סמסונג, אפשר לכבות אותו בהגדרות הטאבלט, תחת תכונות מתקדמות ואז S Pen.
                 </div>
                 <SettingToggle
+                    on={devicePrefs.scratchErase}
+                    label="קישקוש על כתב מוחק אותו"
+                    onClick={() => updateDevicePrefs({ scratchErase: !devicePrefs.scratchErase })}
+                />
+                <div style={{ fontSize: '11px', color: '#71717a', margin: '7px 0 12px', lineHeight: 1.5 }}>
+                    מקשקשים הלוך וחזור על מה שכתבת, בעט או בלורד, והכתב שמתחת נמחק. קישקוש על שטח ריק נשאר ציור. ״בטל״ מחזיר.
+                </div>
+                <SettingToggle on={penDebug} label="בדיקת כפתור העט" onClick={() => { setPenLog([]); setPenDebug((v) => !v); }} />
+                <div style={{ fontSize: '11px', color: '#71717a', margin: '7px 0 12px', lineHeight: 1.5 }}>
+                    מציג בפינת המסך מה הטאבלט שולח כשלוחצים על הכפתור. אם לא מופיע שום שינוי ב־buttons, הדפדפן לא מעביר את הכפתור לדף.
+                </div>
+                <SettingToggle
                     on={devicePrefs.lowLatency}
                     label="השהיה נמוכה לדיו (ניסיוני)"
                     onClick={() => { updateDevicePrefs({ lowLatency: !devicePrefs.lowLatency }); showToast('השינוי ייכנס לתוקף בפתיחה הבאה של הלוח'); }}
@@ -3787,6 +3856,16 @@ const restore = (state) => {
                         setShowRecorder(false);
                     }}
                 />
+            )}
+
+            {penDebug && (
+                <div data-ui dir="ltr" style={{
+                    position: 'fixed', left: 10, bottom: 10, zIndex: 10003, background: 'rgb(0,0,0)', color: '#4ade80',
+                    font: '12px/1.45 monospace', padding: '8px 10px', borderRadius: 10, pointerEvents: 'none', minWidth: 250,
+                }}>
+                    <div style={{ color: '#fde047' }}>press the pen button: hovering and touching</div>
+                    {penLog.map((l, i) => <div key={i} style={{ opacity: 1 - i * 0.09 }}>{l}</div>)}
+                </div>
             )}
 
             {solving && (
