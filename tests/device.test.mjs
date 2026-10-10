@@ -34,10 +34,9 @@ test('בחירה מפורשת גוברת על הזיהוי האוטומטי', ()
 });
 
 test('ערכים פגומים מהאחסון מוחלפים בברירת מחדל', () => {
-    const s = sanitizeDevicePrefs({ penButton: 'explode', penOnly: 'yes', lowLatency: 1 });
+    const s = sanitizeDevicePrefs({ penButton: 'explode', penOnly: 'yes' });
     assert.equal(s.penButton, 'erase');
     assert.equal(s.penOnly, null);
-    assert.equal(s.lowLatency, false);
 });
 
 test('כל פעולות הכפתור נשמרות ונטענות', () => {

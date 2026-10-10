@@ -356,9 +356,8 @@ const syncCustomLayers = () => {
             drawingCanvasRef.current.width = Math.round(width * dpr);
             drawingCanvasRef.current.height = Math.round(height * dpr);
             
-            // הקריאה הראשונה ל־getContext קובעת את תכונות הקנבס. במצב השהיה נמוכה
-            // הדיו החי עוקף את תור הקומפוזיציה של הדפדפן ומגיע למסך מהר יותר
-            const ctx = drawingCanvasRef.current.getContext('2d', devicePrefsRef.current.lowLatency ? { desynchronized: true } : undefined);
+            // בלי desynchronized: בטאבלטים של סמסונג הקנבס השקוף נצבע שחור ומכסה את כל הלוח
+            const ctx = drawingCanvasRef.current.getContext('2d');
             // setTransform ולא scale: scale מצטבר בכל שינוי גודל ומעוות את הציור
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         };
@@ -623,6 +622,10 @@ window.addEventListener('pointercancel', handleGlobalPointerGone);
             sb.current.lastPenAt = e.timeStamp;
             // רשת ביטחון: אם משיכה עם כפתור הצד הסתיימה והכלי הזמני לא הוחזר, מחזירים אותו
             if ((e.type === 'pointerup' || e.type === 'pointercancel') && sb.current.penOverride && !sb.current.penSession) penOverrideEnd();
+            // ב־S Pen כפתור הצד מדווח כ־buttons=1 בזמן שהעט מרחף (לחץ 0). זה האות היחיד
+            // שהדפדפן שולח, ולכן רק ריחוף נחשב: במגע אין דרך להבדיל בינו לבין מגע רגיל
+            if (e.type === 'pointermove' && !sb.current.penDown) sb.current.barrelHeld = e.pressure === 0 && (e.buttons & 3) !== 0;
+            else if (e.type === 'pointerup' || e.type === 'pointercancel') sb.current.barrelHeld = false;
             if (sb.current.penDebug) {
                 const sig = `${e.type}|${e.button}|${e.buttons}`;
                 if (sig !== sb.current.penDebugSig || e.type !== 'pointermove') {
@@ -736,7 +739,8 @@ window.removeEventListener('pointercancel', handleGlobalPointerGone);
     }
 
     // כפתור הצד של העט, או קצה מחק: המשיכה מנותבת לכלי שהוגדר לכפתור
-    if (e.pointerType === 'pen' && (isBarrelPressed(e) || isEraserTip(e))) {
+    const barrel = e.pointerType === 'pen' && (isBarrelPressed(e) || sb.current.barrelHeld);
+    if (e.pointerType === 'pen' && (barrel || isEraserTip(e))) {
         const action = isEraserTip(e) ? 'erase' : devicePrefsRef.current.penButton;
         if (action !== 'none') {
             e.stopPropagation();
@@ -3762,14 +3766,6 @@ const restore = (state) => {
                 <SettingToggle on={penDebug} label="בדיקת כפתור העט" onClick={() => { setPenLog([]); setPenDebug((v) => !v); }} />
                 <div style={{ fontSize: '11px', color: '#71717a', margin: '7px 0 12px', lineHeight: 1.5 }}>
                     מציג בפינת המסך מה הטאבלט שולח כשלוחצים על הכפתור. אם לא מופיע שום שינוי ב־buttons, הדפדפן לא מעביר את הכפתור לדף.
-                </div>
-                <SettingToggle
-                    on={devicePrefs.lowLatency}
-                    label="השהיה נמוכה לדיו (ניסיוני)"
-                    onClick={() => { updateDevicePrefs({ lowLatency: !devicePrefs.lowLatency }); showToast('השינוי ייכנס לתוקף בפתיחה הבאה של הלוח'); }}
-                />
-                <div style={{ fontSize: '11px', color: '#71717a', margin: '7px 0 12px', lineHeight: 1.5 }}>
-                    הדיו החי מצויר ישר למסך, בלי לחכות לשאר הדף. מקצר את הפער בין קצה העט לקו. אם מופיע הבהוב, כבו.
                 </div>
                 <SettingToggle
                     on={pressureInk}

@@ -29,7 +29,6 @@ export const defaultDevicePrefs = () => ({
     penOnly: null,
     penSeen: false,
     penButton: 'erase',
-    lowLatency: false,
     /** קישקוש על כתב מוחק אותו */
     scratchErase: true,
 });
@@ -40,7 +39,6 @@ export const sanitizeDevicePrefs = (raw) => {
     if (raw.penOnly === true || raw.penOnly === false) out.penOnly = raw.penOnly;
     out.penSeen = raw.penSeen === true;
     if (PEN_BUTTON_ACTIONS.some((a) => a.id === raw.penButton)) out.penButton = raw.penButton;
-    out.lowLatency = raw.lowLatency === true;
     if (raw.scratchErase === false) out.scratchErase = false;
     return out;
 };
