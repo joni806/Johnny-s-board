@@ -475,6 +475,10 @@ const syncCustomLayers = () => {
                 selectionFullyContained: false,
                 isDrawingMode: false,
                 enableRetinaScaling: true,
+                // Fabric מקשיב לאירועי מצביע ולא לאירועי מגע. אחרת, בטאבלט, כל נגיעה
+                // של עט או של כף יד הגיעה אליו גם כאירוע מגע — גם כשהלוח כבר טיפל בה
+                // ועצר אותה — והוא ביטל מיד כל בחירה שהלאסו עשה
+                enablePointerEvents: true,
                 fireMiddleClick: true, allowTouchScrolling: false,
                 stopContextMenu: true, renderOnAddRemove: false
             });
@@ -738,7 +742,8 @@ window.addEventListener('pointercancel', handleGlobalPointerGone);
         const penContextMenu = (e) => {
             if (e.pointerType === 'pen' || sb.current.penDown) {
                 e.preventDefault();
-                if (sb.current.penDebug) setPenLog((l) => [`contextmenu  ${e.pointerType || '?'}`, ...l].slice(0, 14));
+                if (sb.current.penDebug) setPenLog((l) => [`contextmenu ${e.pointerType || '?'} +${Math.round(e.timeStamp - (sb.current.strokeStartAt ?? e.timeStamp))}ms`, ...l].slice(0, 14));
+                penButtonFromContextMenuRef.current(e);
             }
         };
         // היומן של בדיקת הכפתור רושם כל סוג מצביע — ייתכן שהדפדפן הופך עט עם כפתור לעכבר
@@ -1085,12 +1090,7 @@ const handleViewportPointerMove = (e) => {
         && isBarrelPressed(e) && devicePrefsRef.current.penButton !== 'none'
         && (modeRef.current === 'draw' || modeRef.current === 'erase')) {
         e.stopPropagation();
-        clearTimeout(sb.current.snapTimeout); clearTimeout(sb.current.perfectTimer);
-        if (sb.current.liveObj) { fCanvas.current.remove(sb.current.liveObj); sb.current.liveObj = null; }
-        sb.current.drawing = false; sb.current.drawPointerId = null; sb.current.points = []; sb.current.inkStroke = null; sb.current.hasSnapped = false;
-        clearLiveCanvas(); setInking(false);
-        sb.current.penSession = { id: e.pointerId, action: devicePrefsRef.current.penButton, inContact: false, done: false };
-        penContactStart(e);
+        switchStrokeToButton(e);
         return;
     }
 
@@ -1582,6 +1582,44 @@ const handleViewportPointerUp = (e) => {
             setMode(prev.mode);
         }
     };
+
+    /**
+     * המשיכה שכבר התחילה עוברת לכלי של כפתור הצד: מה שצויר עד עכשיו נמחק,
+     * והמשיכה ממשיכה בכלי של הכפתור מהנקודה שבה העט נגע במסך.
+     */
+    const switchStrokeToButton = (e) => {
+        clearTimeout(sb.current.snapTimeout); clearTimeout(sb.current.perfectTimer);
+        if (sb.current.liveObj) { fCanvas.current.remove(sb.current.liveObj); sb.current.liveObj = null; }
+        const id = sb.current.drawPointerId ?? e.pointerId;
+        sb.current.drawing = false; sb.current.drawPointerId = null; sb.current.points = []; sb.current.inkStroke = null; sb.current.hasSnapped = false;
+        clearLiveCanvas(); setInking(false);
+        const action = devicePrefsRef.current.penButton;
+        sb.current.penSession = { id, action, inContact: false, done: false };
+        if (sb.current.penDebug) setPenLog((l) => [`>>> כפתור זוהה: ${action}`, ...l].slice(0, 14));
+        penContactStart(e);
+    };
+
+    /**
+     * ב־Chrome באנדרואיד כפתור הצד של העט מדווח לדף כמו מגע רגיל (buttons=1),
+     * אבל כשהעט נוגע במסך והכפתור לחוץ, Chrome מפעיל מיד "לחיצה ארוכה" ושולח
+     * contextmenu כבר בתזוזה הראשונה. לחיצה ארוכה אמיתית מגיעה רק אחרי חצי
+     * שנייה, ולכן contextmenu שמגיע מהר אחרי תחילת המשיכה הוא הכפתור.
+     */
+    const penButtonFromContextMenu = (e) => {
+        if (!sb.current.penDown || !sb.current.drawing || sb.current.drawPointerId == null || sb.current.penSession) return false;
+        if (devicePrefsRef.current.penButton === 'none') return false;
+        if (modeRef.current !== 'draw' && modeRef.current !== 'erase') return false;
+        if (e.timeStamp - (sb.current.strokeStartAt ?? -1e9) > 380) return false;
+        const at = sb.current.strokeStart || { x: e.clientX, y: e.clientY };
+        switchStrokeToButton({
+            clientX: at.x, clientY: at.y, pointerId: sb.current.drawPointerId, pointerType: 'pen',
+            pressure: 0.5, buttons: 1, button: -1, tiltX: 0, tiltY: 0, timeStamp: e.timeStamp,
+            target: drawingCanvasRef.current, shiftKey: false,
+        });
+        return true;
+    };
+    const penButtonFromContextMenuRef = useRef(() => false);
+    useEffect(() => { penButtonFromContextMenuRef.current = penButtonFromContextMenu; });
 
     /** העט נגע במסך כשהכפתור לחוץ */
     const penContactStart = (e) => {
@@ -2807,6 +2845,8 @@ const restore = (state) => {
 
         sb.current.drawing = true;
         sb.current.drawPointerId = e.pointerId;
+        sb.current.strokeStartAt = e.timeStamp;
+        sb.current.strokeStart = { x: e.clientX, y: e.clientY };
         sb.current.hasSnapped = false;
         sb.current.hasMovedEnoughToDraw = false;
         sb.current.points = [coords];
