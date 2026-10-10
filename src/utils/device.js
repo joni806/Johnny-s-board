@@ -69,7 +69,7 @@ export const isPenOnly = (prefs) => (prefs.penOnly === null ? prefs.penSeen : pr
 export const isEraserTip = (e) => e?.pointerType === 'pen' && ((e.buttons & 32) !== 0 || e.button === 5);
 
 /** כפתור הצד של העט לחוץ */
-export const isBarrelPressed = (e) => e?.pointerType === 'pen' && ((e.buttons & 6) !== 0 || e.button === 2 || e.button === 1);
+export const isBarrelPressed = (e) => e?.pointerType === 'pen' && ((e.buttons & 2) !== 0 || e.button === 2);
 
 /**
  * האם העט נוגע במסך. בריחוף עם כפתור לחוץ חלק מהדפדפנים שולחים

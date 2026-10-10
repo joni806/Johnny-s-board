@@ -621,11 +621,8 @@ window.addEventListener('pointercancel', handleGlobalPointerGone);
         const penTrack = (e) => {
             if (e.pointerType !== 'pen') return;
             sb.current.lastPenAt = e.timeStamp;
-            // מצב כפתור הצד נלמד גם מריחוף: בטאבלטים רבים הכפתור נלחץ לפני המגע,
-            // ואירוע ה־pointerdown עצמו מגיע בלי הביט שלו
-            if (e.type === 'pointermove') sb.current.barrelHeld = (e.buttons & 6) !== 0;
-            else if (e.type === 'pointerup' || e.type === 'pointercancel') sb.current.barrelHeld = false;
-            else if (isBarrelPressed(e)) sb.current.barrelHeld = true;
+            // רשת ביטחון: אם משיכה עם כפתור הצד הסתיימה והכלי הזמני לא הוחזר, מחזירים אותו
+            if ((e.type === 'pointerup' || e.type === 'pointercancel') && sb.current.penOverride && !sb.current.penSession) penOverrideEnd();
             if (sb.current.penDebug) {
                 const sig = `${e.type}|${e.button}|${e.buttons}`;
                 if (sig !== sb.current.penDebugSig || e.type !== 'pointermove') {
@@ -739,8 +736,7 @@ window.removeEventListener('pointercancel', handleGlobalPointerGone);
     }
 
     // כפתור הצד של העט, או קצה מחק: המשיכה מנותבת לכלי שהוגדר לכפתור
-    const barrel = e.pointerType === 'pen' && (isBarrelPressed(e) || sb.current.barrelHeld);
-    if (e.pointerType === 'pen' && (barrel || isEraserTip(e))) {
+    if (e.pointerType === 'pen' && (isBarrelPressed(e) || isEraserTip(e))) {
         const action = isEraserTip(e) ? 'erase' : devicePrefsRef.current.penButton;
         if (action !== 'none') {
             e.stopPropagation();
@@ -964,6 +960,21 @@ const handleViewportPointerMove = (e) => {
         if (contact && !ps.inContact) penContactStart(e);
         else if (!contact && ps.inContact) penContactEnd(e);
         else if (contact) penContactMove(e);
+        return;
+    }
+
+    // כפתור הצד נלחץ באמצע משיכה, אחרי שהעט כבר נגע: המשיכה הרגילה מבוטלת
+    // והעט עובר לכלי של הכפתור מהנקודה הזו
+    if (e.pointerType === 'pen' && !sb.current.penSession && sb.current.drawing && sb.current.drawPointerId === e.pointerId
+        && isBarrelPressed(e) && devicePrefsRef.current.penButton !== 'none'
+        && (modeRef.current === 'draw' || modeRef.current === 'erase')) {
+        e.stopPropagation();
+        clearTimeout(sb.current.snapTimeout); clearTimeout(sb.current.perfectTimer);
+        if (sb.current.liveObj) { fCanvas.current.remove(sb.current.liveObj); sb.current.liveObj = null; }
+        sb.current.drawing = false; sb.current.drawPointerId = null; sb.current.points = []; sb.current.inkStroke = null; sb.current.hasSnapped = false;
+        clearLiveCanvas(); setInking(false);
+        sb.current.penSession = { id: e.pointerId, action: devicePrefsRef.current.penButton, inContact: false, done: false };
+        penContactStart(e);
         return;
     }
 
