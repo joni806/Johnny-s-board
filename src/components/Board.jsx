@@ -169,11 +169,15 @@ const Board = forwardRef(({
     const viewportRef = useRef(null);
     const fCanvas = useRef(null);
     const patternBgRef = useRef(null);
+    const predictCanvasRef = useRef(null);
+    const openSelectionMenuRef = useRef(() => {});
 
     const [boardColor, setBoardColor] = useState(initialData?.bg || '#1e3d32');
     const [boardPatternType, setBoardPatternType] = useState(initialData?.pattern || 'grid');
     const selectionType = selectionTypeProp;
     const selectionTypeRef = useRef(selectionType);
+    /** בחירה במלבן פעילה. הדגל חייב להישאר דלוק בזמן ההרמה, כי Fabric קורא אותו אז */
+    const boxSelectOn = () => modeRef.current === 'select' && selectionTypeRef.current === 'box';
     useEffect(() => { selectionTypeRef.current = selectionType; }, [selectionType]);
     // רמת היישור של זיהוי הצורות, נשמרת עם הלוח
     const [snapLevel, setSnapLevel] = useState(initialData?.snapLevel || 'balanced');
@@ -360,6 +364,12 @@ const syncCustomLayers = () => {
             const ctx = drawingCanvasRef.current.getContext('2d');
             // setTransform ולא scale: scale מצטבר בכל שינוי גודל ומעוות את הציור
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            const pc = predictCanvasRef.current;
+            if (pc) {
+                pc.style.width = width + 'px'; pc.style.height = height + 'px';
+                pc.width = Math.round(width * dpr); pc.height = Math.round(height * dpr);
+                pc.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0);
+            }
         };
 
         const initCanvas = () => {
@@ -403,6 +413,7 @@ const syncCustomLayers = () => {
 // --- כניסה אוטומטית לעיגולים הכחולים בלחיצה רגילה (בחירה) ---
             fCanvas.current.on('selection:created', (opt) => {
                 if (sb.current.isEnteringNodeEdit || sb.current.forceBoundingBox) return;
+                if (!sb.current.lasso) openSelectionMenuRef.current(fCanvas.current.getActiveObject());
                 if (opt.selected && opt.selected.length > 1) return;
                 const target = opt.selected[0];
                 if (target && isSmartShape(target)) {
@@ -534,6 +545,7 @@ const syncCustomLayers = () => {
                     fCanvas.current.setDimensions({ width: window.innerWidth, height: window.innerHeight });
                     fCanvas.current.requestRenderAll();
                 }
+                sb.current.canvasRect = null;
                 updateDrawingCanvasResolution(window.innerWidth, window.innerHeight);
             });
         };
@@ -579,7 +591,7 @@ const syncCustomLayers = () => {
         sb.current.multiTouchMoved = false;
         sb.current.multiTouchMaxFingers = 0;
         sb.current.multiTouchInitialPositions = new Map();
-        if (fCanvas.current) fCanvas.current.selection = false;
+        if (fCanvas.current) fCanvas.current.selection = boxSelectOn();
     }
 };
 window.addEventListener('pointerup', handleGlobalPointerGone);
@@ -1105,12 +1117,12 @@ const handleViewportPointerUp = (e) => {
             sb.current.multiTouchMaxFingers = 0;
             sb.current.multiTouchInitialPositions = new Map();
             sb.current.activePointers.clear();
-            if (fCanvas.current) fCanvas.current.selection = false;
+            if (fCanvas.current) fCanvas.current.selection = boxSelectOn();
 
         } else if (sb.current.activePointers.size < 2) {
             // נשארה אצבע אחת — עוצרים פאן אבל שומרים את מידע הטאפ!
             sb.current.isPanning = false; setPanCursor(false);
-            if (fCanvas.current) fCanvas.current.selection = false;
+            if (fCanvas.current) fCanvas.current.selection = boxSelectOn();
         }
     };
 
@@ -2377,7 +2389,8 @@ const restore = (state) => {
 
     // פונקציה אחידה שמחשבת קואורדינטות בדיוק באותו אופן לכל האירועים
     const getCanvasCoords = (clientX, clientY) => {
-        const rect = drawingCanvasRef.current.getBoundingClientRect();
+        // המלבן נשמר בין אירועים: קריאה אליו בכל תזוזת עט מכריחה חישוב פריסה
+        const rect = sb.current.canvasRect || (sb.current.canvasRect = drawingCanvasRef.current.getBoundingClientRect());
         
         // קואורדינטות פיזיות נקיות על המסך
         const screenX = clientX - rect.left;
@@ -2425,8 +2438,8 @@ const restore = (state) => {
     /** עובי הקו של העט הנוכחי ביחידות הלוח. העובי על המסך נשאר קבוע בכל זום */
     const penWidth = (p = penRef.current) => (p?.width || 2.5) / (fCanvas.current?.getZoom() || 1);
 
-    /** האם העט מפעיל זיהוי צורות. כתב נוסחאות וחוט מעגל מטופלים אחרת */
-    const penRecognizes = (p = penRef.current) => p && p.kind !== 'mathink' && p.kind !== 'wire';
+    /** האם העט מפעיל זיהוי צורות. חוט מעגל מטופל אחרת */
+    const penRecognizes = (p = penRef.current) => p && p.kind !== 'wire';
 
     /** סגנון אחיד לכל מה שנוצר מהעט: אטימות, קווקוו וסוג העט */
     const applyPenStyle = (obj, p = penRef.current) => {
@@ -2454,7 +2467,46 @@ const restore = (state) => {
         else delete document.body.dataset.inking;
     };
 
+    /** מוחק את קו החיזוי: שכבה נפרדת, כדי שאפשר יהיה למחוק אותו בכל תזוזה בלי לגעת בדיו עצמו */
+    const clearPrediction = () => {
+        const pc = predictCanvasRef.current;
+        if (pc && sb.current.predictDirty) {
+            pc.getContext('2d').clearRect(0, 0, pc.width, pc.height);
+            sb.current.predictDirty = false;
+        }
+    };
+
+    /**
+     * מצייר את המשך הקו כפי שהדפדפן מנבא אותו, כדי שהדיו יגיע לקצה העט ולא
+     * יישאר כמה פריימים מאחוריו. הקו הזה זמני ונמחק בכל תזוזה.
+     */
+    const paintPrediction = (nativeEvent, lastStep) => {
+        const pc = predictCanvasRef.current;
+        if (!pc || !lastStep || typeof nativeEvent.getPredictedEvents !== 'function') return;
+        const predicted = nativeEvent.getPredictedEvents();
+        clearPrediction();
+        if (!predicted || !predicted.length) return;
+        const p = penRef.current;
+        const ctx = pc.getContext('2d');
+        const zoom = fCanvas.current.getZoom();
+        const vpt = fCanvas.current.viewportTransform;
+        ctx.save();
+        ctx.strokeStyle = inkColor(); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        ctx.lineWidth = Math.max(1, lastStep.tip.r * 2 * zoom);
+        ctx.beginPath();
+        ctx.moveTo(lastStep.tip.x * zoom + vpt[4], lastStep.tip.y * zoom + vpt[5]);
+        for (const pe of predicted.slice(0, 4)) {
+            const c = getCanvasCoords(pe.clientX, pe.clientY);
+            ctx.lineTo(c.screenX, c.screenY);
+        }
+        ctx.stroke();
+        ctx.restore();
+        pc.style.opacity = String(p.opacity ?? 1);
+        sb.current.predictDirty = true;
+    };
+
     const clearLiveCanvas = () => {
+        clearPrediction();
         const cvs = drawingCanvasRef.current;
         if (!cvs) return;
         cvs.getContext('2d').clearRect(0, 0, cvs.width, cvs.height);
@@ -2728,6 +2780,8 @@ const restore = (state) => {
             }
             const color = inkColor();
             for (const step of steps) paintInkStep(ctx, step, toScreen, color, zoom);
+            const lastStep = [...steps].reverse().find(Boolean);
+            if (lastStep && e.pointerType === 'pen') paintPrediction(native, lastStep);
         } else {
             paintLiveStroke();
         }
@@ -2781,7 +2835,6 @@ const restore = (state) => {
         } else if (sb.current.drawing && !sb.current.hasSnapped && modeRef.current === 'draw') {
             if (p.kind === 'wire') finishWire();
             else if (p.kind === 'highlighter') finishHighlighter();
-            else if (p.kind === 'mathink') finishMathInk();
             else if (!tryScratchErase()) convertToScribble();   // הרמה בלי השהיה אף פעם לא מיישרת
         }
         // הדגל מתאפס אחרי השמירה. אחרת כל הקשה בהמשך במצב מחק שמרה שוב
@@ -3114,32 +3167,6 @@ const restore = (state) => {
 
     /* ── כתב יד מתמטי ─────────────────────────────────────────────── */
 
-    /**
-     * משיכה של כתב נוסחאות נשמרת כדיו רגיל ומצטרפת ל"סשן". אחרי שנייה
-     * בלי כתיבה הסשן כולו נשלח לזיהוי, והתוצאה מוצגת מעליו להמרה בהקשה.
-     * משיכה רחוקה פותחת סשן חדש, כדי ששתי נוסחאות לא יתערבבו.
-     */
-    const finishMathInk = () => {
-        const obj = convertToScribble();
-        if (!obj) return;
-        obj.mathInk = true;
-        const sess = sb.current.mathSession;
-        const b = obj.getBoundingRect();
-        if (sess && sess.objs.length) {
-            const u = unionBounds(sess.objs.filter((o) => fCanvas.current.getObjects().includes(o)));
-            const reach = Math.max(60, u.height * 1.3) ;
-            const near = b.left < u.left + u.width + reach && b.left + b.width > u.left - reach && b.top < u.top + u.height + reach * 0.6 && b.top + b.height > u.top - reach * 0.6;
-            if (near) sess.objs.push(obj);
-            else sb.current.mathSession = { objs: [obj] };
-        } else {
-            sb.current.mathSession = { objs: [obj] };
-        }
-        sb.current.mathSeq = (sb.current.mathSeq || 0) + 1;
-        setInkChip(null);
-        clearTimeout(sb.current.mathTimer);
-        sb.current.mathTimer = setTimeout(() => runMathRecognition(sb.current.mathSession), 1100);
-    };
-
     const sessionScreenPos = (objs) => {
         const u = unionBounds(objs);
         const zoom = fCanvas.current.getZoom();
@@ -3300,7 +3327,23 @@ const restore = (state) => {
         if (matched.length === 1) fCanvas.current.setActiveObject(matched[0]);
         else fCanvas.current.setActiveObject(new fabric.ActiveSelection(matched, { canvas: fCanvas.current }));
         fCanvas.current.requestRenderAll();
+        openSelectionMenu(fCanvas.current.getActiveObject());
     };
+
+    /** תפריט הפעולות נפתח מעצמו ליד מה שנבחר, בלי לחיצה ארוכה */
+    // מוגדר שוב בכל רינדור, כי מאזיני Fabric נרשמים פעם אחת
+    const openSelectionMenu = (obj) => {
+        if (!obj || obj.isEditHelper || !fCanvas.current || modeRef.current !== 'select') return;
+        const b = obj.getBoundingRect();
+        const zoom = fCanvas.current.getZoom();
+        const vpt = fCanvas.current.viewportTransform;
+        const cx = (b.left + b.width / 2) * zoom + vpt[4];
+        const bottom = (b.top + b.height) * zoom + vpt[5];
+        setContextMenu({ visible: true, x: cx - 116, y: bottom + 14, target: obj });
+        setShowBoardSettings(false); setRevisions(null);
+    };
+
+    useEffect(() => { openSelectionMenuRef.current = openSelectionMenu; });
 
     const handleColorChange = (c, target = contextMenu.target) => {
         const t = target;
@@ -3555,7 +3598,7 @@ const restore = (state) => {
         sb.current.multiTouchMaxFingers = 0;
         sb.current.multiTouchInitialPositions = new Map();
         sb.current.activePointers.clear();
-        if (fCanvas.current) fCanvas.current.selection = false;
+        if (fCanvas.current) fCanvas.current.selection = boxSelectOn();
     }
 };
     return (
@@ -3917,7 +3960,7 @@ const restore = (state) => {
                             </div>
                             {cmHasInk && (
                                 <button onClick={() => convertSelectionToMath(cmTarget)} className="cm-btn cm-accent">
-                                    <Icon name="sigma" size={15} /> המר כתב יד לנוסחה
+                                    <Icon name="sigma" size={15} /> המר לטקסט
                                 </button>
                             )}
                             {(cmType === 'activeselection' || (cmType === 'group' && !cmTarget.customType)) && (
@@ -4023,6 +4066,9 @@ const restore = (state) => {
                     onPointerUp={handlePointerUp} 
                     onPointerCancel={handlePointerUp}
                 />
+                {/* קו החיזוי של העט, מעל הדיו החי */}
+                <canvas id="predict-canvas" ref={predictCanvasRef} aria-hidden="true"
+                    style={{ position: 'absolute', top: 0, left: 0, zIndex: 2, pointerEvents: 'none' }} />
                 {/* שכבת המתמטיקה מאופסת לגודל 0 כדי לא לתפוס מקום וירטואלי, האלמנטים בתוכה יקבלו מיקום מוחלט */}
                 <div id="math-layer" ref={mathLayerRef} style={{ position: 'absolute', top: 0, left: 0, width: '0px', height: '0px', overflow: 'visible', pointerEvents: 'none', zIndex: 3 }}></div>
             </div>

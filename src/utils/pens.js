@@ -1,9 +1,9 @@
 /* =====================================================================
  * pens.js — העטים, ההגדרות שלהם, ושמירתם במכשיר
  * ---------------------------------------------------------------------
- * שלושה עטים תמידיים: עט, לורד ומדגיש. עט נוסף אחד, מבין כתב נוסחאות,
- * חוט מעגל וקו מקווקו, מופיע בסרגל אחרי שבוחרים בו, ואפשר להחליף אותו. לעט אין צבע משלו — הצבע נבחר
- * בסרגל הצבעים ומשותף לכל מה שמציירים, כך שאין מה לבלבל.
+ * שלושה עטים תמידיים: עט, לורד ומדגיש. עט נוסף אחד, מבין חוט מעגל
+ * וקו מקווקו, מופיע בסרגל אחרי שבוחרים בו, ואפשר להחליף אותו. לכל עט יש צבע, עובי ושקיפות משלו, והם
+ * נשמרים לאותו עט בלבד.
  *
  * המודול טהור — בלי React ובלי Fabric — ולכן ניתן לבדיקה ב־Node.
  * ===================================================================== */
@@ -13,43 +13,37 @@ export const PEN_KINDS = {
     pen: {
         label: 'עט', hint: 'עט רגיל, דק, רגיש ללחץ',
         icon: 'pen', ink: {}, extra: false,
-        defaults: { width: 2.5, opacity: 1, dash: 'solid' },
+        defaults: { width: 2.5, opacity: 1, dash: 'solid', color: '#f5f5f5' },
         sizes: [1.5, 2.5, 4],
     },
     lord: {
         label: 'לורד', hint: 'עבה, מעוגל וקצת שקוף',
         icon: 'lord', ink: { minRatio: 1, maxRatio: 1, tiltInfluence: 0, taperFloor: 1 }, extra: false,
-        defaults: { width: 9, opacity: 0.6, dash: 'solid' },
+        defaults: { width: 9, opacity: 0.6, dash: 'solid', color: '#f5f5f5' },
         sizes: [6, 9, 14],
     },
     highlighter: {
         label: 'מדגיש', hint: 'פס רחב ושקוף, נשאר מתחת לכתב',
         icon: 'highlighter', ink: null, extra: false,
-        defaults: { width: 44, opacity: 0.35, dash: 'solid' },
+        defaults: { width: 44, opacity: 0.35, dash: 'solid', color: '#fde047' },
         sizes: [26, 44, 72],
-    },
-    mathink: {
-        label: 'עט נוסחאות', hint: 'כותבים נוסחה ביד והיא הופכת לנוסחה מוקלדת',
-        icon: 'mathpen', ink: { minRatio: 1, maxRatio: 1, tiltInfluence: 0, taperFloor: 1 }, extra: true,
-        defaults: { width: 3, opacity: 1, dash: 'solid' },
-        sizes: [2, 3, 5],
     },
     wire: {
         label: 'עט חוט', hint: 'קווים ישרים, אופקיים ואנכיים, שנצמדים לרשת. לשרטוט מעגלים',
         icon: 'wirepen', ink: null, extra: true,
-        defaults: { width: 2.5, opacity: 1, dash: 'solid' },
+        defaults: { width: 2.5, opacity: 1, dash: 'solid', color: '#f5f5f5' },
         sizes: [1.5, 2.5, 4],
     },
     dashed: {
         label: 'קו מקווקו', hint: 'קו מקווקו חופשי, לצירים, קווי עזר ושדות',
         icon: 'dashpen', ink: {}, extra: true,
-        defaults: { width: 2.5, opacity: 1, dash: 'dashed' },
+        defaults: { width: 2.5, opacity: 1, dash: 'dashed', color: '#f5f5f5' },
         sizes: [1.5, 2.5, 4],
     },
 };
 
 export const BASE_KINDS = ['pen', 'lord', 'highlighter'];
-export const EXTRA_KINDS = ['mathink', 'wire', 'dashed'];
+export const EXTRA_KINDS = ['wire', 'dashed'];
 
 /** גודל ההיקף של תצוגת עובי: מייצג קו בעובי נתון בתוך נקודה בסרגל */
 export const DASH_STYLES = {
@@ -84,6 +78,8 @@ export const sanitizePenState = (raw) => {
         out.settings[k] = {
             width: clamp(Number(s.width) || d.width, 0.5, 140),
             opacity: clamp(Number(s.opacity) || d.opacity, 0.05, 1),
+            // לכל עט צבע משלו. עט שנשמר בלי צבע מקבל את ברירת המחדל שלו
+            color: isHex(s.color) ? s.color.toLowerCase() : d.color,
         };
     }
     const visible = [...BASE_KINDS, ...out.extras];
@@ -115,7 +111,7 @@ export const buildPens = (state) =>
     [...BASE_KINDS, ...state.extras].map((kind) => {
         const d = PEN_KINDS[kind].defaults;
         const s = state.settings[kind] || {};
-        return { id: kind, kind, width: s.width ?? d.width, opacity: s.opacity ?? d.opacity, dash: d.dash, arrow: false };
+        return { id: kind, kind, width: s.width ?? d.width, opacity: s.opacity ?? d.opacity, color: s.color ?? d.color, dash: d.dash, arrow: false };
     });
 
 /** בהירות יחסית של צבע, 0 עד 255 */

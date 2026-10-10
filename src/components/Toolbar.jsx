@@ -2,8 +2,6 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import Icon from './icons';
 import Popover from './Popover';
 import StemPanel from './StemPanel';
-import MathInkDownload from './MathInkDownload';
-import { getMathInkStatus, preloadMathInk, wasMathInkDownloaded } from '../utils/mathInk';
 import { PEN_KINDS, EXTRA_KINDS, COLOR_BAR } from '../utils/pens';
 import './toolbar.css';
 
@@ -109,7 +107,6 @@ export default function Toolbar({
     const [gridCols, setGridCols] = useState('10');
     const [gridRows, setGridRows] = useState('10');
     const [clearArmed, setClearArmed] = useState(false);
-    const [showMathDl, setShowMathDl] = useState(false);
     const [lastText, setLastText] = useState('text');
     const wrapRef = useRef(null);
     const fileInputRef = useRef(null);
@@ -183,15 +180,6 @@ export default function Toolbar({
         return () => window.removeEventListener('keydown', onKey);
     }, [pens, mode, eraser, setEraser, setMode, setActivePenId]);
 
-    /* ── עט הנוסחאות: בבחירה הראשונה מציעים להוריד את המודל, ומראים התקדמות ── */
-    useEffect(() => {
-        if (mode !== 'draw' || activePenId !== 'mathink') return undefined;
-        if (getMathInkStatus().state === 'ready') return undefined;
-        if (wasMathInkDownloaded()) { preloadMathInk(); return undefined; }
-        const t = setTimeout(() => setShowMathDl(true), 0);
-        return () => clearTimeout(t);
-    }, [mode, activePenId]);
-
     /* ── Desmos ── */
     useEffect(() => {
         let calcInstance = null;
@@ -245,7 +233,6 @@ export default function Toolbar({
     /* ── עטים ── */
     const onPenTap = (p, e) => {
         if (mode === 'draw' && p.id === activePenId) {
-            if (p.id === 'mathink' && getMathInkStatus().state !== 'ready' && !wasMathInkDownloaded()) { setShowMathDl(true); return; }
             openPop('pen', e); return;
         }
         setActivePenId(p.id);
@@ -352,7 +339,7 @@ export default function Toolbar({
                                         active={mode === 'draw' && p.id === activePenId} color={shownColor}
                                         onClick={(e) => onPenTap(p, e)} />
                                 ))}
-                                <button data-popover-anchor className="pb-btn pb-add" title="עטים נוספים: נוסחאות, חוט וקו מקווקו" aria-label="עטים נוספים" onClick={(e) => openPop('addpen', e)}>
+                                <button data-popover-anchor className="pb-btn pb-add" title="עטים נוספים: חוט וקו מקווקו" aria-label="עטים נוספים" onClick={(e) => openPop('addpen', e)}>
                                     <Icon name="plus" size={15} />
                                 </button>
                             </div>
@@ -435,9 +422,9 @@ export default function Toolbar({
                                     value={Math.round((1 - activePen.opacity) * 100)} onChange={(e) => updatePen(activePen.id, { opacity: 1 - Number(e.target.value) / 100 })} aria-label="שקיפות" />
                             </div>
                         )}
-                        <div className="pe-hint">הצבע נבחר בסרגל הצבעים שמתחת לסרגל הכלים.</div>
+                        <div className="pe-hint">הצבע והעובי נשמרים לעט הזה בלבד. הצבע נבחר בסרגל.</div>
                         <div className="pe-footer">
-                            <button onClick={() => updatePen(activePen.id, { width: kind.defaults.width, opacity: kind.defaults.opacity })}>איפוס</button>
+                            <button onClick={() => updatePen(activePen.id, { width: kind.defaults.width, opacity: kind.defaults.opacity, color: kind.defaults.color })}>איפוס</button>
                             {kind.extra && <button className="danger" onClick={() => { removeExtraPen(activePen.id); setPop(null); }}><Icon name="trash" size={14} /> הסר מהסרגל</button>}
                         </div>
                     </div>
@@ -524,8 +511,6 @@ export default function Toolbar({
                     onInsertGrid={() => setShowGridModal(true)}
                     onClose={() => setShowStem(false)} />
             )}
-
-            {showMathDl && <MathInkDownload onClose={() => setShowMathDl(false)} />}
 
             {showHelp && (
                 <div className="pb-modal" data-ui onPointerDown={(e) => { if (e.target === e.currentTarget) setShowHelp(false); }}>

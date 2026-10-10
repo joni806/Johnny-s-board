@@ -206,7 +206,7 @@ check('הקשה שנייה על עט פעיל פותחת הגדרות', await pa
 await shot('06-pen-options');
 await page.keyboard.press('Escape');
 await page.locator('.pb-add').click();
-check('תפריט ההוספה מציע נוסחאות, חוט ומקווקו', (await page.locator('.pe-pick').count()) === 3);
+check('תפריט ההוספה מציע חוט ומקווקו בלבד', (await page.locator('.pe-pick').count()) === 2);
 await shot('06b-add-pen');
 await page.locator('.pe-pick', { hasText: 'קו מקווקו' }).click();
 check('עט מקווקו נוסף לסרגל', (await pens.count()) === 4);
@@ -480,16 +480,7 @@ await clearBoard();
 
 /* ── 13. זיהוי כתב יד מתמטי, כשהמודל זמין מקומית ── */
 if (TEXO) {
-  await page.locator('.pb-add').click();
-  await page.locator('.pe-pick', { hasText: 'עט נוסחאות' }).click();
-  await page.waitForSelector('.mi-card', { timeout: 4000 }).catch(() => {});
-  check('בחירה ראשונה בעט הנוסחאות מציעה הורדה', await page.locator('.mi-card').isVisible());
-  await page.locator('.mi-card button', { hasText: 'הורד עכשיו' }).click();
-  await page.waitForSelector('.mi-ok', { timeout: 90000 }).catch(() => {});
-  check('  ומראה התקדמות עד שהמודל מוכן', await page.locator('.mi-ok').count() > 0 || await page.locator('.mi-card').count() === 0);
-  await page.waitForTimeout(1600);
-  check('  והקבצים הגדולים ירדו פעם אחת בלבד', onnxRequests === 2, String(onnxRequests));
-  // x בשתי משיכות, ואחריו 2 קטן כמעריך
+  // x בשתי משיכות, ואחריו 2 קטן כמעריך, בעט הרגיל. אחר כך בוחרים ומשתמשים בתפריט
   await stroke([{ x: 400, y: 380 }, { x: 470, y: 470 }], { steps: 12 });
   await stroke([{ x: 470, y: 380 }, { x: 400, y: 470 }], { steps: 12 });
   const two = [];
@@ -499,7 +490,13 @@ if (TEXO) {
     else two.push({ x: 482 + (t - 0.6) / 0.4 * 32, y: 382 });
   }
   await stroke(two, { steps: 2 });
-  await page.waitForSelector('.board-chip .chip-tex', { timeout: 60000 }).catch(() => {});
+  await page.evaluate(() => { window.__pbSetMode('select'); });
+  await page.waitForTimeout(200);
+  await page.evaluate(() => { const c = window.__pbCanvas; const F = window.__pbFabric; c.setActiveObject(new F.ActiveSelection(c.getObjects().filter((o) => o.customType === 'ink'), { canvas: c })); c.requestRenderAll(); });
+  await page.waitForTimeout(300);
+  check('תפריט הבחירה נפתח מעצמו', await page.locator('.context-menu').isVisible());
+  await page.locator('.context-menu button', { hasText: 'המר לטקסט' }).click();
+  await page.waitForSelector('.board-chip .chip-tex', { timeout: 90000 }).catch(() => {});
   const tex = await page.locator('.board-chip .chip-tex').innerText().catch(() => '');
   check('כתב יד מתמטי זוהה', tex.length > 0, tex);
   await shot('15-mathink');

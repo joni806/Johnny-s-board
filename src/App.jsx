@@ -5,7 +5,7 @@ import Toolbar from './components/Toolbar';
 import PresentBar from './components/PresentBar';
 import DrivePanel from './components/DrivePanel';
 import { backupProject, isConnected as driveConnected } from './utils/drive';
-import { loadPenState, savePenState, loadColor, saveColor, buildPens, inkColorOn } from './utils/pens';
+import { loadPenState, savePenState, buildPens, inkColorOn } from './utils/pens';
 import {
   PROJECT_PREFIX, listProjects, loadProject, saveProject,
   deleteProject as removeProject, flushWrites,
@@ -28,16 +28,19 @@ function App() {
   // העטים: עט, לורד ומדגיש תמיד, ועטים נוספים לפי בחירה. ההגדרות שמורות במכשיר
   const [penState, setPenState] = useState(loadPenState);
   useEffect(() => { savePenState(penState); }, [penState]);
-  // צבע אחד לכל מה שמציירים: עט, מדגיש, צורות, רכיבים, טקסט ונוסחאות
-  const [drawColor, setDrawColor] = useState(loadColor);
-  useEffect(() => { saveColor(drawColor); }, [drawColor]);
   const pens = useMemo(() => buildPens(penState), [penState]);
-  const basePen = pens.find((p) => p.id === penState.active) || pens[0];
-  const pen = useMemo(() => ({ ...basePen, color: drawColor }), [basePen, drawColor]);
+  // לכל עט צבע, עובי ושקיפות משלו, והם נשמרים לעט עצמו. צורות, רכיבים, טקסט
+  // ונוסחאות נוצרים בצבע של העט שפעיל כרגע
+  const pen = pens.find((p) => p.id === penState.active) || pens[0];
+  const drawColor = pen.color;
   const setActivePenId = useCallback((id) => setPenState((s) => ({ ...s, active: id })), []);
   const updatePen = useCallback((kind, patch) => setPenState((s) => ({ ...s, settings: { ...s.settings, [kind]: { ...(s.settings[kind] || {}), ...patch } } })), []);
   const addExtraPen = useCallback((kind) => setPenState((s) => ({ ...s, extras: [kind], active: kind })), []);
   const removeExtraPen = useCallback((kind) => setPenState((s) => ({ ...s, extras: s.extras.filter((k) => k !== kind), active: s.active === kind ? 'pen' : s.active })), []);
+  const setDrawColor = useCallback((c) => setPenState((s) => {
+    const kind = buildPens(s).some((p) => p.id === s.active) ? s.active : 'pen';
+    return { ...s, settings: { ...s.settings, [kind]: { ...(s.settings[kind] || {}), color: c } } };
+  }), []);
   const [eraser, setEraser] = useState(loadEraser);
   useEffect(() => { try { localStorage.setItem(ERASER_KEY, JSON.stringify(eraser)); } catch { /* מצב פרטי */ } }, [eraser]);
   const [selectionType, setSelectionType] = useState('freehand');
