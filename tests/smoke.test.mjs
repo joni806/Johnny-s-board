@@ -11,17 +11,18 @@
  * Fabric → סריאליזציה → אחסון.
  */
 import { chromium } from 'playwright';
+import { fileURLToPath } from 'url';
 import { createServer } from 'http';
 import { readFile } from 'fs/promises';
 import { extname, join, normalize } from 'path';
 
 const TYPES = { '.html':'text/html', '.js':'text/javascript', '.mjs':'text/javascript', '.css':'text/css', '.json':'application/json',
                 '.png':'image/png', '.svg':'image/svg+xml', '.ico':'image/x-icon', '.webmanifest':'application/manifest+json' };
-const root = new URL('../dist/', import.meta.url).pathname;
+const root = fileURLToPath(new URL('../dist/', import.meta.url));
 const server = createServer(async (req, res) => {
   try {
     const p = normalize(join(root, decodeURIComponent(req.url.split('?')[0])));
-    const file = p.endsWith('/') ? join(p, 'index.html') : p;
+    const file = (p.endsWith('/') || p.endsWith('\\')) ? join(p, 'index.html') : p;
     const body = await readFile(file);
     res.writeHead(200, { 'Content-Type': TYPES[extname(file)] || 'application/octet-stream' });
     res.end(body);
@@ -30,7 +31,7 @@ const server = createServer(async (req, res) => {
 await new Promise(r => server.listen(0, r));
 const url = `http://127.0.0.1:${server.address().port}/`;
 
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 const errors = [];
 page.on('pageerror', e => errors.push('pageerror: ' + e.message));
@@ -213,10 +214,10 @@ check('בלי דרייב מוצגת בקשת חיבור ולא כפתור הקל
       && await page.locator('button', { hasText: 'התחל הקלטה' }).count() === 0);
 await page.locator('button', { hasText: 'חבר את גוגל דרייב' }).click();
 await page.waitForTimeout(400);
-check('כפתור החיבור פותח את חלונית הדרייב', await page.locator('text=Client ID').first().isVisible());
+check('כפתור החיבור פותח את חלונית הדרייב', await page.locator('div[style*="z-index: 10050"]').first().isVisible());
 await page.keyboard.press('Escape');
 await page.waitForTimeout(400);
-check('Escape סוגר את חלונית הדרייב', await page.locator('input[placeholder*="apps.googleusercontent"]').count() === 0);
+check('Escape סוגר את חלונית הדרייב', await page.locator('div[style*="z-index: 10050"]').count() === 0);
 // סרגל ההקלטה נשאר פתוח מאחורי החלונית, וצריך לסגור גם אותו
 await page.locator('button', { hasText: 'סגור' }).first().click().catch(() => {});
 await page.waitForTimeout(300);

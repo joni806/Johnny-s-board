@@ -56,14 +56,20 @@ export default defineConfig({
         description: 'לוח ציור מתמטי חכם לפיזיקה ולמתמטיקה',
         theme_color: '#1e3d32',
         background_color: '#1e3d32',
+        // מסך מלא בטאבלט: בלי שורת המצב ובלי סרגל הניווט, כל הגובה ללוח.
+        // דפדפן שלא תומך במסך מלא נופל ל־standalone
         display: 'standalone',
+        display_override: ['fullscreen', 'standalone'],
         orientation: 'any',
         dir: 'ltr', // הלוח שלך בנוי משמאל לימין ביסודו, התפריטים הם rtl
         lang: 'he',
+        start_url: '/',
+        scope: '/',
+        // הקבצים icon-192.png ו־icon-512.png לא קיימים, ולכן ההתקנה יצאה בלי אייקון
         icons: [
-          { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
-          { src: '/icon-512.png', sizes: '512x512', type: 'image/png' },
-          { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' }
+          { src: '/web-app-manifest-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: '/web-app-manifest-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+          { src: '/web-app-manifest-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
         ]
       },
       workbox: {

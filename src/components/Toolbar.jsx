@@ -49,21 +49,42 @@ const SHORTCUTS = [
     ['Ctrl+Z / Ctrl+Y', 'ביטול וחזרה'],
     ['Delete', 'מחיקת הבחירה'],
     ['לחיצה ארוכה על הלוח', 'הגדרות הלוח, ואחרי העתקה גם הדבקה במקום הלחיצה'],
-    ['השהיית העט בסוף קו', 'הפיכת משיכה לצורה'],
+    ['השהיית העט בסוף קו', 'הפיכת משיכה לצורה. ״בטל״ מחזיר לכתב יד'],
+    ['כפתור הצד של S Pen', 'מחזיקים וכותבים: מחק כברירת מחדל. ניתן לשינוי בהגדרות הלוח'],
+    ['אצבע אחת, כשכותבים בעט', 'הזזת הלוח. כף היד על המסך לא מציירת'],
     ['שתי אצבעות', 'הקשה מבטלת, גרירה מזיזה, צביטה מגדילה'],
     ['שלוש אצבעות', 'הקשה מבצעת שוב'],
 ];
 
-/** כפתור בסרגל: אייקון ותווית קצרה מתחתיו, כדי שיהיה ברור מה כל כלי עושה */
+/** כפתור בסרגל: אייקון בלבד. התווית נשמרת לקורא מסך ולטולטיפ, כדי שהסרגל יישאר דק */
 function DockButton({ icon, label, title, active, onClick, className = '', color }) {
     return (
         <button data-popover-anchor title={title || label} aria-label={title || label} aria-pressed={active ? 'true' : undefined}
             className={`pb-btn ${active ? 'active' : ''} ${className}`} onClick={onClick}>
-            <Icon name={icon} size={22} />
+            <Icon name={icon} size={20} />
             <span className="pb-btn-label">{label}</span>
             {active && color && <i className="pb-btn-ink" style={{ background: color }} />}
         </button>
     );
+}
+
+/**
+ * מעקב אחרי גודל המסך. בטאבלט שמסובב לאורך אין מקום לכל הצבעים בשורה,
+ * והם מתקפלים לכפתור אחד. גם מיקום סרגל צף נבדק מחדש אחרי סיבוב.
+ */
+function useViewport() {
+    const read = () => ({ w: window.innerWidth, h: window.innerHeight });
+    const [vp, setVp] = useState(read);
+    useEffect(() => {
+        let frame = null;
+        const onResize = () => {
+            if (frame !== null) return;
+            frame = requestAnimationFrame(() => { frame = null; setVp(read()); });
+        };
+        window.addEventListener('resize', onResize);
+        return () => { window.removeEventListener('resize', onResize); if (frame !== null) cancelAnimationFrame(frame); };
+    }, []);
+    return vp;
 }
 
 /**
@@ -97,6 +118,9 @@ export default function Toolbar({
     const activePen = pens.find((p) => p.id === activePenId) || pens[0];
     const side = drag ? 'float' : dock.side;
     const vertical = side === 'left' || side === 'right';
+    const vp = useViewport();
+    // כל הצבעים בשורה רק כשיש לסרגל מקום. אחרת כפתור צבע אחד שפותח את כולם
+    const compactColors = vertical ? vp.h < 940 : vp.w < 900;
     const popSide = side === 'float' ? 'top' : side;
     const kind = PEN_KINDS[activePen.kind];
     
@@ -132,8 +156,7 @@ export default function Toolbar({
     const wrapStyle = (() => {
         if (drag) return { left: drag.x, top: drag.y };
         if (dock.side === 'float') {
-            const vw = window.innerWidth, vh = window.innerHeight;
-            return { left: Math.max(4, Math.min(vw - 80, dock.x)), top: Math.max(4, Math.min(vh - 60, dock.y)) };
+            return { left: Math.max(4, Math.min(vp.w - 80, dock.x)), top: Math.max(4, Math.min(vp.h - 48, dock.y)) };
         }
         return {};
     })();
@@ -275,36 +298,48 @@ export default function Toolbar({
         : Math.min(16, 4 + v * 0.15));
     const pickSize = (v) => { if (mode === 'draw') updatePen(activePen.id, { width: v }); else setEraser({ ...eraser, size: v }); };
 
+    const colorSwatches = (
+        <div className="pb-colors" role="group" aria-label="צבעים">
+            {COLOR_BAR.map((c) => (
+                <button key={c} className={`pb-swatch ${color.toLowerCase() === c ? 'on' : ''}`} style={{ '--c': c }}
+                    title={c === '#f5f5f5' ? 'לבן' : c === '#1a1a1a' ? 'שחור' : c} aria-label={`צבע ${c}`} aria-pressed={color.toLowerCase() === c}
+                    onClick={() => { pickColor(c); if (compactColors) setPop(null); }} />
+            ))}
+            <label className={`pb-swatch pb-rainbow ${isCustomColor ? 'on' : ''}`} title="בחירת צבע חופשית" aria-label="בחירת צבע חופשית">
+                {isCustomColor && <i style={{ background: color }} />}
+                <input type="color" value={color} onChange={(e) => pickColor(e.target.value)} />
+            </label>
+        </div>
+    );
+
     return (
         <>
-            {/* ── בית, ביטול וחזרה ── */}
-            {onBack && (
-                <button title="חזרה ללוחות שלי" aria-label="חזרה ללוחות שלי" className="pb-corner pb-corner-left" onClick={onBack}>
-                    <Icon name="home" size={18} />
-                </button>
-            )}
-            <div className="pb-corner-group">
-                <button title="בטל (Ctrl+Z, הקשה בשתי אצבעות)" aria-label="בטל" className="pb-corner" onClick={() => act('undo')}><Icon name="undo" size={18} /></button>
-                <button title="בצע שוב (Ctrl+Y, הקשה בשלוש אצבעות)" aria-label="בצע שוב" className="pb-corner" onClick={() => act('redo')}><Icon name="redo" size={18} /></button>
-            </div>
-
             {drag && drag.moved && SIDES.map((sd) => <div key={sd} className={`pb-dock-target edge-${sd} ${drag.edge === sd ? 'hot' : ''}`} />)}
 
-            {/* ── הסרגל, וסרגל הצבעים לצדו ── */}
+            {/* ── הסרגל: פס דק אחד, עם הבית, ביטול וחזרה, הכלים, הצבעים והעוביים ── */}
             <div ref={wrapRef} data-ui dir="ltr" data-side={side}
                 className={`pb-wrap side-${side} ${vertical ? 'vertical' : ''} ${dock.collapsed ? 'collapsed' : ''} ${drag ? 'dragging' : ''}`}
                 style={wrapStyle}>
                 <div data-scrollable dir="rtl" className="pb-dock" role="toolbar" aria-label="כלים">
                     <button className="pb-grip" title="גרור לכל קצה של המסך, או הקש כדי לכווץ" aria-label="הזזה וכיווץ של הסרגל"
                         onPointerDown={onGripDown} onPointerMove={onGripMove} onPointerUp={onGripUp} onPointerCancel={onGripUp}>
-                        <Icon name="grip" size={16} />
+                        <Icon name="grip" size={14} />
                     </button>
 
                     {dock.collapsed ? (
-                        <DockButton icon={kind.icon} label="" title="פתח את הסרגל" active={mode === 'draw'} color={shownColor}
-                            onClick={() => setDock((d) => ({ ...d, collapsed: false }))} />
+                        <>
+                            <DockButton icon={kind.icon} label="" title="פתח את הסרגל" active={mode === 'draw'} color={shownColor}
+                                onClick={() => setDock((d) => ({ ...d, collapsed: false }))} />
+                            <DockButton icon="undo" label="בטל" title="בטל" onClick={() => act('undo')} />
+                        </>
                     ) : (
                         <>
+                            {onBack && <DockButton icon="home" label="הלוחות שלי" title="חזרה ללוחות שלי" className="pb-home" onClick={onBack} />}
+                            <div className="pb-group">
+                                <DockButton icon="undo" label="בטל" title="בטל (Ctrl+Z, הקשה בשתי אצבעות)" onClick={() => act('undo')} />
+                                <DockButton icon="redo" label="בצע שוב" title="בצע שוב (Ctrl+Y, הקשה בשלוש אצבעות)" onClick={() => act('redo')} />
+                            </div>
+                            <div className="pb-sep" />
                             <div className="pb-group" role="radiogroup" aria-label="עטים">
                                 {pens.map((p, i) => (
                                     <DockButton key={p.id} icon={PEN_KINDS[p.kind].icon} label={PEN_KINDS[p.kind].label}
@@ -313,7 +348,7 @@ export default function Toolbar({
                                         onClick={(e) => onPenTap(p, e)} />
                                 ))}
                                 <button data-popover-anchor className="pb-btn pb-add" title="עטים נוספים: נוסחאות, חוט וקו מקווקו" aria-label="עטים נוספים" onClick={(e) => openPop('addpen', e)}>
-                                    <Icon name="plus" size={18} />
+                                    <Icon name="plus" size={15} />
                                 </button>
                             </div>
                             <div className="pb-sep" />
@@ -330,57 +365,49 @@ export default function Toolbar({
                                     active={mode === 'text' || mode === 'math'} onClick={tapText} />
                             </div>
                             <div className="pb-sep" />
+
+                            {/* ── צבע אחד לכל מה שמציירים, ולידו העובי ── */}
+                            <div className={`pb-colorbar ${mode === 'erase' ? 'dim' : ''}`}>
+                                {compactColors ? (
+                                    <button data-popover-anchor className={`pb-swatch pb-color-now ${pop?.type === 'colors' ? 'on' : ''}`} style={{ '--c': shownColor }}
+                                        title="צבע" aria-label="בחירת צבע" onClick={(e) => openPop('colors', e)} />
+                                ) : colorSwatches}
+                                {textMode && (
+                                    <div className="pb-sizes" role="group" aria-label="גודל כתב">
+                                        <button className="pb-size pb-font" title="הקטן כתב" aria-label="הקטן כתב" onClick={() => { setGlobalFontSize((v) => Math.max(16, v - 6)); act('updateGlobalFontSize', -6); }}>A−</button>
+                                        <button className="pb-size pb-font" title="הגדל כתב" aria-label="הגדל כתב" onClick={() => { setGlobalFontSize((v) => v + 6); act('updateGlobalFontSize', 6); }}>A+</button>
+                                    </div>
+                                )}
+                                {sizes && (
+                                    <div className="pb-sizes" role="group" aria-label={mode === 'draw' ? 'עובי' : 'גודל המחק'}>
+                                        {sizes.map((v) => (
+                                            <button key={v} className={`pb-size ${Math.abs(sizeNow - v) < 0.01 ? 'on' : ''}`} onClick={() => pickSize(v)}
+                                                title={mode === 'draw' ? `עובי ${v}` : `גודל ${v}`} aria-label={mode === 'draw' ? `עובי ${v}` : `גודל ${v}`}>
+                                                <span style={{ width: sizeDot(v), height: sizeDot(v), ...(mode === 'erase' ? { background: 'transparent', border: '1.5px solid currentColor' } : null) }} />
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                            <div className="pb-sep" />
                             <div className="pb-group">
                                 <DockButton icon="stem" label="הנדסה" title="הנדסה ופיזיקה: רכיבים, נוסחאות, מחשבון, גרפים" className="pb-stem"
                                     active={showStem} onClick={() => { setShowStem((v) => !v); setPop(null); }} />
                                 <DockButton icon="shapes" label="צורות" title="צורות, תמונה וצירים" active={pop?.type === 'shapes'} onClick={(e) => openPop('shapes', e)} />
-                                <DockButton icon="more" label="עוד" title="עוד: הגדרות, מיקום הסרגל, מצב הצגה" active={pop?.type === 'more'} onClick={(e) => openPop('more', e)} />
+                                <DockButton icon="more" label="עוד" title="עוד: הגדרות, עט S Pen, מיקום הסרגל, מצב הצגה" active={pop?.type === 'more'} onClick={(e) => openPop('more', e)} />
                             </div>
                         </>
                     )}
                 </div>
-
-                {/* ── סרגל הצבעים ── */}
-                {!dock.collapsed && (
-                    <div data-ui dir="rtl" className={`pb-colorbar ${mode === 'erase' ? 'dim' : ''}`} role="group" aria-label="צבעים">
-                        <div className="pb-colors">
-                            {COLOR_BAR.map((c) => (
-                                <button key={c} className={`pb-swatch ${color.toLowerCase() === c ? 'on' : ''}`} style={{ '--c': c }}
-                                    title={c === '#f5f5f5' ? 'לבן' : c === '#1a1a1a' ? 'שחור' : c} aria-label={`צבע ${c}`} aria-pressed={color.toLowerCase() === c}
-                                    onClick={() => pickColor(c)} />
-                            ))}
-                            <label className={`pb-swatch pb-rainbow ${isCustomColor ? 'on' : ''}`} title="בחירת צבע חופשית" aria-label="בחירת צבע חופשית">
-                                {isCustomColor && <i style={{ background: color }} />}
-                                <input type="color" value={color} onChange={(e) => pickColor(e.target.value)} />
-                            </label>
-                        </div>
-                        {textMode && (
-                            <>
-                                <div className="pb-sep" />
-                                <div className="pb-sizes" role="group" aria-label="גודל כתב">
-                                    <button className="pb-size pb-font" title="הקטן כתב" aria-label="הקטן כתב" onClick={() => { setGlobalFontSize((v) => Math.max(16, v - 6)); act('updateGlobalFontSize', -6); }}>A−</button>
-                                    <button className="pb-size pb-font" title="הגדל כתב" aria-label="הגדל כתב" onClick={() => { setGlobalFontSize((v) => v + 6); act('updateGlobalFontSize', 6); }}>A+</button>
-                                </div>
-                            </>
-                        )}
-                        {sizes && (
-                            <>
-                                <div className="pb-sep" />
-                                <div className="pb-sizes" role="group" aria-label={mode === 'draw' ? 'עובי' : 'גודל המחק'}>
-                                    {sizes.map((v) => (
-                                        <button key={v} className={`pb-size ${Math.abs(sizeNow - v) < 0.01 ? 'on' : ''}`} onClick={() => pickSize(v)}
-                                            title={mode === 'draw' ? `עובי ${v}` : `גודל ${v}`} aria-label={mode === 'draw' ? `עובי ${v}` : `גודל ${v}`}>
-                                            <span style={{ width: sizeDot(v), height: sizeDot(v), ...(mode === 'erase' ? { background: 'transparent', border: '1.5px solid currentColor' } : null) }} />
-                                        </button>
-                                    ))}
-                                </div>
-                            </>
-                        )}
-                    </div>
-                )}
             </div>
 
             {/* ── חלוניות ── */}
+            {pop?.type === 'colors' && (
+                <Popover anchor={pop.anchor} side={popSide} onClose={() => setPop(null)} width={248} label="צבעים">
+                    <div className="pe pb-colors-pop">{colorSwatches}</div>
+                </Popover>
+            )}
+
             {pop?.type === 'pen' && activePen && (
                 <Popover anchor={pop.anchor} side={popSide} onClose={() => setPop(null)} width={290} label="הגדרות עט">
                     <div className="pe">
@@ -479,7 +506,7 @@ export default function Toolbar({
                         <button onClick={() => { onPresent?.(); setPop(null); }}><Icon name="present" size={16} /> מצב הצגה עם לייזר</button>
                         <button onClick={() => { act('toggleRecorder'); setPop(null); }}><Icon name="mic" size={16} /> הקלטה מסונכרנת</button>
                         <button onClick={() => { onDrive?.(); setPop(null); }}><Icon name="drive" size={16} /> גוגל דרייב</button>
-                        <button onClick={() => { act('openBoardSettings'); setPop(null); }}><Icon name="settings" size={16} /> הגדרות הלוח</button>
+                        <button onClick={() => { act('openBoardSettings'); setPop(null); }}><Icon name="settings" size={16} /> הגדרות הלוח ועט S Pen</button>
                         <button onClick={() => { setShowHelp(true); setPop(null); }}><Icon name="keyboard" size={16} /> מחוות וקיצורים</button>
                     </div>
                 </Popover>

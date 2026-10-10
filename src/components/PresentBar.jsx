@@ -51,7 +51,7 @@ const PresentBar = ({ mode, setMode, onUndo, onExit }) => {
                 position: 'fixed', bottom: '22px', left: '50%', transform: 'translateX(-50%)',
                 zIndex: 10001, display: 'flex', alignItems: 'center', gap: '6px',
                 padding: '7px 9px', borderRadius: '16px',
-                background: 'rgba(24,24,27,0.88)', backdropFilter: 'blur(18px)',
+                background: 'rgb(24,24,27)',
                 border: '1px solid rgba(255,255,255,0.1)',
                 boxShadow: '0 10px 30px rgba(0,0,0,0.45)',
                 opacity: dim ? 0.22 : 1, transition: 'opacity 0.45s',

@@ -188,7 +188,8 @@ function App() {
   // --- תצוגת אזור העבודה (הלוח וסרגל הכלים) ---
   if (currentProject) {
     return (
-      <div style={{ width: '100vw', height: '100vh', overflow: 'hidden', position: 'relative' }}>
+      // dvh ולא vh: בכרום באנדרואיד 100vh גבוה מהחלק הגלוי, והתחתית של הלוח נחתכה
+      <div style={{ width: '100vw', height: '100dvh', overflow: 'hidden', position: 'relative' }}>
 
 
         <Board 

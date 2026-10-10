@@ -8,7 +8,11 @@ import {
 } from '../utils/canvasUtils';
 import { recognizeShape, buildInkPath, fitLine, simplifyRDP } from '../utils/recognition';
 import { createInkStroke, samplePointer, paintInkStep } from '../utils/ink';
-import { PEN_KINDS, inkColorOn, dashArrayFor, isFilledInk } from '../utils/pens';
+import { PEN_KINDS, inkColorOn, dashArrayFor, isFilledInk, loadPenState, buildPens } from '../utils/pens';
+import {
+    PEN_BUTTON_ACTIONS, HOLD_ACTIONS, loadDevicePrefs, saveDevicePrefs, isPenOnly,
+    isEraserTip, isBarrelPressed, isPenContact, isLikelyPalm,
+} from '../utils/device';
 import { patternStyle, PAPER_TYPES, GRID } from '../utils/patterns';
 import { stampById } from '../utils/stamps';
 import { samplePlot, niceTicks, logTicks, tickLabel } from '../utils/plot';
@@ -174,8 +178,12 @@ const Board = forwardRef(({
     const [snapLevel, setSnapLevel] = useState(initialData?.snapLevel || 'balanced');
     const snapLevelRef = useRef(snapLevel);
     useEffect(() => { snapLevelRef.current = snapLevel; }, [snapLevel]);
-    // שבבים צפים: פירושים לצורה שזוהתה, זיהוי נוסחה, הדבקה, וסרגל החישוב
-    const [snapChip, setSnapChip] = useState(null);
+    // העדפות המכשיר: העט, כפתור הצד ודחיית כף היד. משותפות לכל הלוחות
+    const [devicePrefs, setDevicePrefs] = useState(loadDevicePrefs);
+    const devicePrefsRef = useRef(devicePrefs);
+    useEffect(() => { devicePrefsRef.current = devicePrefs; saveDevicePrefs(devicePrefs); }, [devicePrefs]);
+    const updateDevicePrefs = (patch) => setDevicePrefs((p) => ({ ...p, ...patch }));
+    // שבבים צפים: זיהוי נוסחה, הדבקה, וסרגל החישוב
     const [inkChip, setInkChip] = useState(null);
     const [pasteChip, setPasteChip] = useState(false);
     const [pasteArmed, setPasteArmed] = useState(false);
@@ -262,6 +270,11 @@ const sb = useRef({
     liveObj: null, liveObjType: null, liveObjProps: null, editCircles: [], editingOriginalObj: null,
     wasAutoSelected: false, isEnteringNodeEdit: false, clipboard: null,
     activePointers: new Map(),
+    ignoredPointers: new Set(), // מגעים שזוהו ככף יד, עד שהם עוזבים את המסך
+    fingerPan: null,            // אצבע אחת שמזיזה את הלוח במצב "רק העט כותב"
+    penSession: null,           // משיכה עם כפתור הצד של העט לחוץ
+    drawPointerId: null,        // המצביע שמצייר עכשיו. מצביעים אחרים לא נכנסים למשיכה
+    lastPenAt: -Infinity, penDown: false,
     multiTouchStartTime: null,
     multiTouchInitialPositions: new Map(),
     multiTouchMoved: false,
@@ -301,16 +314,23 @@ const syncCustomLayers = () => {
         }
 
         // שכבת הרקע מסתנכרנת עם הזום והתזוזה. לכל שכבה בתוך הרקע — למשל
-        // הקווים הראשיים והמשניים בדף הנדסי — מוחל אותו מיקום
+        // הקווים הראשיים והמשניים בדף הנדסי — מוחל אותו מיקום. התמונה והגודל
+        // נבנים מחדש רק כשהזום, הסוג או הצבע משתנים; בהזזה רגילה מתעדכן רק
+        // המיקום, כדי לא לפרק ולצייר מחדש את כל הרקע בכל תזוזה של האצבע
         if (patternBgRef.current) {
-            const st = patternStyle(boardPatternTypeRef.current, getPatternContrastColor(boardColorRef.current), zoom);
-            patternBgRef.current.style.backgroundImage = st.image;
-            patternBgRef.current.style.backgroundSize = st.size;
-            patternBgRef.current.style.backgroundPosition = Array(st.layers).fill(`${vpt[4]}px ${vpt[5]}px`).join(', ');
+            const el = patternBgRef.current;
+            const key = `${boardPatternTypeRef.current}|${boardColorRef.current}|${zoom}`;
+            if (el.dataset.pbKey !== key) {
+                const st = patternStyle(boardPatternTypeRef.current, getPatternContrastColor(boardColorRef.current), zoom);
+                el.style.backgroundImage = st.image;
+                el.style.backgroundSize = st.size;
+                el.dataset.pbKey = key;
+                el.dataset.pbLayers = String(st.layers);
+            }
+            el.style.backgroundPosition = Array(Number(el.dataset.pbLayers) || 1).fill(`${vpt[4]}px ${vpt[5]}px`).join(', ');
         }
-        // סרגל החישוב והשבבים הצפים צמודים למקום על הלוח, ולכן זזים עם המצלמה
+        // סרגל החישוב צמוד למקום על הלוח, ולכן זז עם המצלמה
         if (sb.current.activeBox && isMathBox(sb.current.activeBox)) placeCasBar(sb.current.activeBox);
-        if (sb.current.lastSnap) placeSnapChip();
         
         fCanvas.current.requestRenderAll(); 
     };
@@ -331,7 +351,9 @@ const syncCustomLayers = () => {
             drawingCanvasRef.current.width = Math.round(width * dpr);
             drawingCanvasRef.current.height = Math.round(height * dpr);
             
-            const ctx = drawingCanvasRef.current.getContext('2d');
+            // הקריאה הראשונה ל־getContext קובעת את תכונות הקנבס. במצב השהיה נמוכה
+            // הדיו החי עוקף את תור הקומפוזיציה של הדפדפן ומגיע למסך מהר יותר
+            const ctx = drawingCanvasRef.current.getContext('2d', devicePrefsRef.current.lowLatency ? { desynchronized: true } : undefined);
             // setTransform ולא scale: scale מצטבר בכל שינוי גודל ומעוות את הציור
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         };
@@ -456,28 +478,14 @@ const syncCustomLayers = () => {
                     return; 
                 }
                 if (sb.current.editCircles.length > 0) return; // עריכת קודקודים פעילה
-                const c = getCanvasCoords(opt.e.clientX, opt.e.clientY);
-                sb.current.lasso = {
-                    screen: [{ x: c.screenX, y: c.screenY }],
-                    scene: [{ x: c.virtualX, y: c.virtualY }],
-                    moved: false, startX: opt.e.clientX, startY: opt.e.clientY,
-                };
+                lassoBegin(opt.e.clientX, opt.e.clientY);
             });
             fCanvas.current.on('mouse:move', (opt) => {
-                if (!sb.current.lasso) return;
-                const c = getCanvasCoords(opt.e.clientX, opt.e.clientY);
-                sb.current.lasso.screen.push({ x: c.screenX, y: c.screenY });
-                sb.current.lasso.scene.push({ x: c.virtualX, y: c.virtualY });
-                if (Math.hypot(opt.e.clientX - sb.current.lasso.startX, opt.e.clientY - sb.current.lasso.startY) > 6) {
-                    sb.current.lasso.moved = true;
-                }
-                drawLasso(sb.current.lasso.screen);
+                if (sb.current.lasso) lassoMove(opt.e.clientX, opt.e.clientY);
             });
             fCanvas.current.on('mouse:up', () => {
-                const lasso = sb.current.lasso;
+                const lasso = lassoEnd();
                 if (!lasso) return;
-                sb.current.lasso = null;
-                clearLasso();
                 if (!lasso.moved) {
                     // הקשה על אזור ריק — חזרה לציור אם צורה נבחרה קודם
                     if (sb.current.wasAutoSelected && sb.current.editCircles.length === 0) {
@@ -511,13 +519,19 @@ const syncCustomLayers = () => {
 
         initCanvas();
 
+        // סיבוב הטאבלט, פתיחת המקלדת ושינוי גודל החלון מגיעים כרצף של
+        // אירועים. הקנבסים נבנים מחדש פעם אחת לפריים, ולא בכל אירוע
+        let resizeFrame = null;
         const handleResize = () => {
-            if (fCanvas.current) {
-                fCanvas.current.setWidth(window.innerWidth);
-                fCanvas.current.setHeight(window.innerHeight);
-                fCanvas.current.requestRenderAll();
-            }
-            updateDrawingCanvasResolution(window.innerWidth, window.innerHeight);
+            if (resizeFrame !== null) return;
+            resizeFrame = requestAnimationFrame(() => {
+                resizeFrame = null;
+                if (fCanvas.current) {
+                    fCanvas.current.setDimensions({ width: window.innerWidth, height: window.innerHeight });
+                    fCanvas.current.requestRenderAll();
+                }
+                updateDrawingCanvasResolution(window.innerWidth, window.innerHeight);
+            });
         };
         window.addEventListener('resize', handleResize);
 
@@ -573,6 +587,8 @@ window.addEventListener('pointercancel', handleGlobalPointerGone);
         const tg = { ids: new Map(), max: 0, start: 0, moved: false, onBoard: false };
         const gDown = (e) => {
             if (e.pointerType !== 'touch') return;
+            // כף היד שמחזיקה את העט אינה הקשה בשתי אצבעות, ואסור לה לבטל פעולה
+            if (isPenOnly(devicePrefsRef.current) && isLikelyPalm(e, sb.current)) return;
             if (tg.ids.size === 0) { tg.max = 0; tg.start = e.timeStamp; tg.moved = false; tg.onBoard = false; }
             tg.ids.set(e.pointerId, { x0: e.clientX, y0: e.clientY });
             tg.max = Math.max(tg.max, tg.ids.size);
@@ -593,6 +609,25 @@ window.addEventListener('pointercancel', handleGlobalPointerGone);
             tg.max = 0;
         };
         const gUpOk = gUp(false), gCancel = gUp(true);
+
+        /* ── מעקב אחרי העט: בריחוף ובמגע ──
+           משמש לדחיית כף היד, ובפעם הראשונה שמזוהה עט גם מדליק מעצמו את
+           מצב "רק העט כותב", שבו האצבע מזיזה את הלוח במקום לצייר. */
+        const penTrack = (e) => {
+            if (e.pointerType !== 'pen') return;
+            sb.current.lastPenAt = e.timeStamp;
+            if (e.type === 'pointerdown') sb.current.penDown = true;
+            else if (e.type === 'pointerup' || e.type === 'pointercancel') sb.current.penDown = false;
+            if (!devicePrefsRef.current.penSeen) {
+                devicePrefsRef.current = { ...devicePrefsRef.current, penSeen: true };
+                setDevicePrefs((p) => ({ ...p, penSeen: true }));
+                if (devicePrefsRef.current.penOnly === null) showToast('זוהה עט. מעכשיו העט כותב והאצבע מזיזה את הלוח. אפשר לשנות בהגדרות הלוח');
+            }
+        };
+        // עט שנוגע במסך לא מעלה את תפריט ההקשר של הדפדפן, גם עם כפתור הצד
+        const penContextMenu = (e) => { if (e.pointerType === 'pen' || sb.current.penDown) e.preventDefault(); };
+        for (const t of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) window.addEventListener(t, penTrack, { capture: true, passive: true });
+        window.addEventListener('contextmenu', penContextMenu);
         window.addEventListener('pointerdown', gDown, true);
         window.addEventListener('pointermove', gMove, true);
         window.addEventListener('pointerup', gUpOk, true);
@@ -656,7 +691,10 @@ window.removeEventListener('pointercancel', handleGlobalPointerGone);
                 window.removeEventListener('pointermove', gMove, true);
                 window.removeEventListener('pointerup', gUpOk, true);
                 window.removeEventListener('pointercancel', gCancel, true);
-                
+                for (const t of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) window.removeEventListener(t, penTrack, { capture: true });
+                window.removeEventListener('contextmenu', penContextMenu);
+                if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
+
                 window.removeEventListener('touchmove', preventNativeScroll);
                 window.removeEventListener('wheel', preventNativeScroll);
                 
@@ -669,10 +707,64 @@ window.removeEventListener('pointercancel', handleGlobalPointerGone);
     // נניח ל-event להגיע לאלמנט בלי שנתערב
     const isOnUI = e.target.closest('[data-ui], button, input, select, textarea, label, a');
     if (isOnUI) return; // ← יציאה מיידית, הכפתור יקבל את ה-click רגיל
+
+    const penOnly = isPenOnly(devicePrefsRef.current);
+    // דחיית כף היד: מגע בזמן שהעט כותב או מרחף לא מגיע לשום מקום בלוח
+    if (penOnly && isLikelyPalm(e, sb.current)) {
+        e.stopPropagation();
+        sb.current.ignoredPointers.add(e.pointerId);
+        return;
+    }
+
+    // כפתור הצד של העט, או קצה מחק: המשיכה מנותבת לכלי שהוגדר לכפתור
+    if (e.pointerType === 'pen' && (isBarrelPressed(e) || isEraserTip(e))) {
+        const action = isEraserTip(e) ? 'erase' : devicePrefsRef.current.penButton;
+        if (action !== 'none') {
+            e.stopPropagation();
+            e.preventDefault();
+            if (sb.current.longPressTimer) { clearTimeout(sb.current.longPressTimer); sb.current.longPressTimer = null; }
+            sb.current.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+            sb.current.penSession = { id: e.pointerId, action, inContact: false, done: false };
+            if (!sb.current.barrelAnnounced && !isEraserTip(e)) {
+                sb.current.barrelAnnounced = true;
+                const label = PEN_BUTTON_ACTIONS.find((a) => a.id === action)?.label;
+                if (label) showToast(`כפתור העט: ${label}. אפשר לשנות בהגדרות הלוח`);
+            }
+            if (isPenContact(e)) penContactStart(e);
+            return;
+        }
+    }
+
     sb.current.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const drawingMode = modeRef.current === 'draw' || modeRef.current === 'erase';
+    // עט בכלי כתיבה: בלי לחיצה כפולה ובלי לחיצה ארוכה. נקודתיים, שלוש
+    // נקודות או השהיה לפני תחילת קו הם חלק רגיל מכתיבה, ולא בקשה לתפריט.
+    // התפריט זמין מכפתור הצד של העט, או בלחיצה ארוכה באצבע
+    const penWriting = e.pointerType === 'pen' && drawingMode;
+
+    // במצב "רק העט כותב" אצבע אחת מזיזה את הלוח במקום לצייר
+    if (penOnly && e.pointerType === 'touch' && drawingMode && sb.current.activePointers.size === 1) {
+        e.stopPropagation();
+        sb.current.fingerPan = { id: e.pointerId };
+        sb.current.lastX = e.clientX;
+        sb.current.lastY = e.clientY;
+    }
+
+    // Shift ולחיצה במחשב: הזזת הלוח
+    if (e.shiftKey && sb.current.activePointers.size === 1 && e.pointerType === 'mouse') {
+        e.stopPropagation();
+        sb.current.isPanning = true; setPanCursor(true);
+        sb.current.lastX = e.clientX;
+        sb.current.lastY = e.clientY;
+        return;
+    }
 
 // לחיצה ארוכה — רק אצבע אחת
-    if (sb.current.activePointers.size === 1) {
+    if (sb.current.activePointers.size === 1 && penWriting) {
+        sb.current.longPressStartX = e.clientX;
+        sb.current.longPressStartY = e.clientY;
+        sb.current.lastTapTime = 0;
+    } else if (sb.current.activePointers.size === 1) {
         // ← זיהוי לחיצה כפולה למעבר מעיגולים כחולים → מסגרת לבנה
         // זמן האירוע עצמו ולא Date.now — אותו שעון לכל האירועים, ובלי קריאה לא טהורה
         const now = e.timeStamp;
@@ -792,7 +884,8 @@ window.removeEventListener('pointercancel', handleGlobalPointerGone);
 }, 500);
     }
 
-    if (sb.current.activePointers.size >= 2 || e.shiftKey) {
+    if (sb.current.activePointers.size >= 2) {
+        sb.current.fingerPan = null;
         // ביטול לחיצה ארוכה כשנוגעת אצבע שנייה
         if (sb.current.longPressTimer) { clearTimeout(sb.current.longPressTimer); sb.current.longPressTimer = null; }
 
@@ -837,7 +930,33 @@ window.removeEventListener('pointercancel', handleGlobalPointerGone);
 };
 
 const handleViewportPointerMove = (e) => {
+    if (sb.current.ignoredPointers.has(e.pointerId)) { e.stopPropagation(); return; }
     if (sb.current.activePointers.has(e.pointerId)) sb.current.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    // משיכה עם כפתור הצד מנותבת ישירות לכלי של הכפתור
+    const ps = sb.current.penSession;
+    if (ps && ps.id === e.pointerId) {
+        e.stopPropagation();
+        const contact = isPenContact(e);
+        if (contact && !ps.inContact) penContactStart(e);
+        else if (!contact && ps.inContact) penContactEnd(e);
+        else if (contact) penContactMove(e);
+        return;
+    }
+
+    // עט שמרחף מעל המסך במצב מחק מראה את עיגול המחק לפני שנוגעים
+    if (e.pointerType === 'pen' && !sb.current.drawing && modeRef.current === 'erase' && !isPenContact(e)) schedulePenHover(e);
+
+    // אצבע אחת במצב "רק העט כותב": הזזת הלוח, אחרי תזוזה קטנה כדי שהקשה תישאר הקשה
+    const fp = sb.current.fingerPan;
+    if (fp && fp.id === e.pointerId && sb.current.activePointers.size === 1) {
+        e.stopPropagation();
+        if (!sb.current.isPanning && Math.hypot(e.clientX - sb.current.lastX, e.clientY - sb.current.lastY) > 6) {
+            sb.current.isPanning = true; setPanCursor(true);
+            if (sb.current.longPressTimer) { clearTimeout(sb.current.longPressTimer); sb.current.longPressTimer = null; }
+            sb.current.lastTapTime = 0;
+        }
+    }
 
     // ביטול לחיצה ארוכה ודאבל קליק אם האצבע זזה (מונע התנגשות בזמן ציור קווים)
     if (sb.current.activePointers.size > 0) {
@@ -914,7 +1033,18 @@ const handleViewportPointerMove = (e) => {
 };
 
 const handleViewportPointerUp = (e) => {
+    if (sb.current.ignoredPointers.delete(e.pointerId)) { e.stopPropagation(); return; }
     if (sb.current.longPressTimer) { clearTimeout(sb.current.longPressTimer); sb.current.longPressTimer = null; }
+    const ps = sb.current.penSession;
+    if (ps && ps.id === e.pointerId) {
+        e.stopPropagation();
+        if (ps.inContact) penContactEnd(e);
+        sb.current.penSession = null;
+    }
+    if (sb.current.fingerPan && sb.current.fingerPan.id === e.pointerId) {
+        e.stopPropagation();
+        sb.current.fingerPan = null;
+    }
     sb.current.activePointers.delete(e.pointerId);
     if (sb.current.perfectPointer === e.pointerId) {
         sb.current.perfectPointer = null;
@@ -1225,70 +1355,117 @@ const handleViewportPointerUp = (e) => {
     
     const autosaveTimerRef = useRef(null);
     
- // Apple Pencil barrel button → מצב מחק זמני
-    const prevModeRef = useRef(null);
-    // האם כפתור של העט לחוץ ברגע זה. בלי זה כל תפריט הקשר של העט, כולל
-    // לחיצה ארוכה רגילה, היה מדליק את המחק בטעות.
-    const penButtonRef = useRef(false);
-    
+    /* ── כפתור הצד של העט ──────────────────────────────────────────
+       משיכה שמתחילה כשהכפתור לחוץ מנותבת לכלי שהמשתמש בחר לכפתור, רק לזמן
+       המשיכה. ההחלפה נעשית ישירות ב־ref ולא דרך setMode, כי עדכון מצב של
+       React מגיע רק אחרי שהמשיכה כבר התחילה בכלי הקודם. */
+
+    /** מדגיש זמני בצבע הנוכחי, עם העובי והשקיפות שהמשתמש קבע למדגיש */
+    const highlighterPen = () => {
+        const hp = buildPens({ ...loadPenState(), extras: [] }).find((p) => p.kind === 'highlighter');
+        return { ...hp, color: penRef.current?.color };
+    };
+
+    const penOverrideStart = (action) => {
+        const prev = { mode: modeRef.current, pen: penRef.current, eraser: eraserRef.current };
+        sb.current.penOverride = prev;
+        let next = null;
+        if (action === 'erase' || action === 'erase-stroke') {
+            next = 'erase';
+            eraserRef.current = { ...(eraserRef.current || {}), mode: action === 'erase' ? 'pixel' : 'stroke', highlighterOnly: false };
+        } else if (action === 'highlighter') {
+            next = 'draw';
+            penRef.current = highlighterPen();
+        } else if (action === 'laser') {
+            next = 'laser';
+        }
+        if (next) {
+            modeRef.current = next;
+            if (next !== prev.mode) setMode(next);
+        }
+    };
+
+    const penOverrideEnd = () => {
+        const prev = sb.current.penOverride;
+        if (!prev) return;
+        sb.current.penOverride = null;
+        penRef.current = prev.pen;
+        eraserRef.current = prev.eraser;
+        if (modeRef.current !== prev.mode) {
+            modeRef.current = prev.mode;
+            setMode(prev.mode);
+        }
+    };
+
+    /** העט נגע במסך כשהכפתור לחוץ */
+    const penContactStart = (e) => {
+        const ps = sb.current.penSession;
+        if (!ps || ps.done) return;
+        ps.inContact = true;
+        if (ps.action === 'undo') { ps.done = true; undo(); try { navigator.vibrate?.(8); } catch { /* אין רטט */ } return; }
+        if (ps.action === 'menu') { ps.done = true; handleContextMenuAction(e.clientX, e.clientY); return; }
+        if (ps.action === 'select') {
+            if (sb.current.editCircles.length > 0) exitNodeEditMode();
+            fCanvas.current?.discardActiveObject();
+            lassoBegin(e.clientX, e.clientY);
+            return;
+        }
+        penOverrideStart(ps.action);
+        handlePointerDown(e);
+    };
+
+    const penContactMove = (e) => {
+        const ps = sb.current.penSession;
+        if (!ps || !ps.inContact || ps.done) return;
+        if (ps.action === 'select') lassoMove(e.clientX, e.clientY);
+        else handlePointerMove(e);
+    };
+
+    const penContactEnd = (e) => {
+        const ps = sb.current.penSession;
+        if (!ps) return;
+        ps.inContact = false;
+        if (ps.done) return;
+        if (ps.action === 'select') {
+            const lasso = lassoEnd();
+            if (!lasso || !lasso.moved) return;
+            selectInsideLasso(lasso.scene);
+            if (fCanvas.current?.getActiveObject()) {
+                // הבחירה נשארת פעילה להזזה. הקשה על מקום ריק מחזירה לכלי הקודם
+                if (modeRef.current !== 'select') { modeRef.current = 'select'; setMode('select'); }
+                sb.current.wasAutoSelected = true;
+            }
+            return;
+        }
+        handlePointerUp(e);
+        penOverrideEnd();
+    };
+
+    /** עיגול המחק מתחת לעט המרחף, פעם אחת לכל פריים */
+    const schedulePenHover = (e) => {
+        sb.current.hoverPt = getCanvasCoords(e.clientX, e.clientY);
+        if (sb.current.hoverFrame) return;
+        sb.current.hoverFrame = requestAnimationFrame(() => {
+            sb.current.hoverFrame = null;
+            const pt = sb.current.hoverPt;
+            if (!pt || sb.current.drawing || modeRef.current !== 'erase') return;
+            paintEraserCursor(pt.screenX, pt.screenY);
+        });
+    };
+
+    const handleViewportPointerLeave = (e) => {
+        if (e.pointerType !== 'pen' || sb.current.drawing) return;
+        sb.current.hoverPt = null;
+        if (modeRef.current === 'erase') clearLiveCanvas();
+    };
+
+    // עיגול מחק שנשאר מהריחוף נמחק כשעוברים לכלי אחר
     useEffect(() => {
-        // ב-Safari/iPadOS, כפתור הצד של Apple Pencil מגיע כ-contextmenu event
-        // עם e.pointerType === 'pen', לא כ-buttons & 32
-        const handleBarrelDown = (e) => {
-            if (e.pointerType !== 'pen') return;
-            // שיטה 1: buttons & 32 (Chrome/Windows)
-            const isBarrel = (e.buttons & 32) !== 0;
-            // שיטה 2: button === 2 (Safari/iPadOS — כפתור ימני)
-            const isRightClick = e.button === 2;
-            if (isBarrel || isRightClick) {
-                penButtonRef.current = true;
-                if (modeRef.current !== 'erase') {
-                    prevModeRef.current = modeRef.current;
-                    setMode('erase');
-                }
-            }
-        };
-
-        const handleBarrelUp = (e) => {
-            if (e.pointerType !== 'pen') return;
-            const isBarrel = (e.buttons & 32) !== 0;
-            const isRightClick = e.button === 2;
-            // רק שחרר אם המחק היה פעיל ועכשיו הכפתור לא לחוץ
-            if (!isBarrel && !isRightClick) {
-                penButtonRef.current = false;
-                if (prevModeRef.current !== null && modeRef.current === 'erase') {
-                    setMode(prevModeRef.current);
-                    prevModeRef.current = null;
-                }
-            }
-        };
-
-        // Safari מעלה contextmenu event כשלוחצים כפתור ימני עם עט —
-        // חייבים לחסום אותו כדי שהתפריט לא יופיע
-        const handlePenContextMenu = (e) => {
-            if (e.pointerType !== 'pen') return;
-            e.preventDefault();
-            // רק כפתור צד שלחוץ בפועל מפעיל מחק. לחיצה ארוכה עם העט פותחת
-            // את תפריט ההקשר, ואסור שהיא תחליף כלי מאחורי הגב של המשתמש.
-            if (penButtonRef.current && modeRef.current !== 'erase') {
-                e.stopPropagation();
-                prevModeRef.current = modeRef.current;
-                setMode('erase');
-            }
-        };
-
-        window.addEventListener('pointerdown', handleBarrelDown, { passive: true });
-        window.addEventListener('pointermove', handleBarrelDown, { passive: true });
-        window.addEventListener('pointerup', handleBarrelUp, { passive: true });
-        window.addEventListener('contextmenu', handlePenContextMenu); // ← לא passive!
-
-        return () => {
-            window.removeEventListener('pointerdown', handleBarrelDown);
-            window.removeEventListener('pointermove', handleBarrelDown);
-            window.removeEventListener('pointerup', handleBarrelUp);
-            window.removeEventListener('contextmenu', handlePenContextMenu);
-        };
-    }, [setMode]);
+        if (mode !== 'erase' && !sb.current.drawing && !sb.current.lasso && drawingCanvasRef.current) {
+            const cvs = drawingCanvasRef.current;
+            cvs.getContext('2d').clearRect(0, 0, cvs.width, cvs.height);
+        }
+    }, [mode]);
 
     const captureState = () => {
         if (!fCanvas.current || !mathLayerRef.current) return null;
@@ -1355,6 +1532,16 @@ const handleViewportPointerUp = (e) => {
         }
     };
 
+    /**
+     * הגדרות הלוח שנשמרות עם התוכן. נקראות מ־refs ולא מהמצב של הרינדור:
+     * saveState נקרא גם ממאזינים שנרשמו פעם אחת, למשל בתיבות נוסחה ובקיצורי
+     * המקלדת, ושם הערכים מהרינדור הראשון היו דורסים צבע לוח שהשתנה מאז.
+     */
+    const boardMeta = () => ({
+        bg: boardColorRef.current, pattern: boardPatternTypeRef.current,
+        autoSnap: autoSnapRef.current, pressureInk: pressureInkRef.current, snapLevel: snapLevelRef.current,
+    });
+
     const saveState = () => {
         if (!fCanvas.current || sb.current.isLocked || !mathLayerRef.current) return;
         sb.current.redoStack = [];
@@ -1365,10 +1552,7 @@ const handleViewportPointerUp = (e) => {
                 flushHistory();
                 const state = sb.current.lastState;
                 if (!state) return;
-                Promise.resolve(onAutoSave({
-                    fabric: state.fabric, math: state.math,
-                    bg: boardColor, pattern: boardPatternType, autoSnap, pressureInk, snapLevel,
-                })).then((res) => {
+                Promise.resolve(onAutoSave({ fabric: state.fabric, math: state.math, ...boardMeta() })).then((res) => {
                     if (res && res.ok === false) {
                         showToast(res.reason === 'quota'
                             ? 'האחסון המקומי מלא. כדאי לחבר את הלוח לגוגל דרייב.'
@@ -1383,7 +1567,7 @@ const handleViewportPointerUp = (e) => {
         if (autosaveTimerRef.current) { clearTimeout(autosaveTimerRef.current); autosaveTimerRef.current = null; }
         flushHistory();
         if (onAutoSave && sb.current.lastState) {
-            onAutoSave({ fabric: sb.current.lastState.fabric, math: sb.current.lastState.math, bg: boardColor, pattern: boardPatternType, autoSnap, pressureInk, snapLevel });
+            onAutoSave({ fabric: sb.current.lastState.fabric, math: sb.current.lastState.math, ...boardMeta() });
         }
     };
     const flushNowRef = useRef(flushNow);
@@ -1446,6 +1630,30 @@ const handleViewportPointerUp = (e) => {
         if (touched) fCanvas.current.requestRenderAll();
     };
 
+    /* המסך נשאר דולק רק בזמן הקלטה. כיבוי מסך באמצע שיעור עוצר את המיקרופון
+       בחלק מהמכשירים, אבל בכל זמן אחר נעילה כזו רק מבזבזת סוללה */
+    const acquireWakeLock = async () => {
+        if (sb.current.wakeLock || !navigator.wakeLock?.request) return;
+        try {
+            const lock = await navigator.wakeLock.request('screen');
+            sb.current.wakeLock = lock;
+            lock.addEventListener?.('release', () => { if (sb.current.wakeLock === lock) sb.current.wakeLock = null; });
+        } catch { /* נדחה, למשל במצב חיסכון בסוללה */ }
+    };
+    const releaseWakeLock = () => {
+        const lock = sb.current.wakeLock;
+        sb.current.wakeLock = null;
+        if (lock) lock.release().catch(() => {});
+    };
+    // הדפדפן משחרר את הנעילה כשהלשונית מוסתרת. בחזרה אליה, אם עדיין מקליטים, היא נלקחת שוב
+    useEffect(() => {
+        const onVisible = () => {
+            if (document.visibilityState === 'visible' && sb.current.recorder && sb.current.recorder.status !== 'idle') acquireWakeLock();
+        };
+        document.addEventListener('visibilitychange', onVisible);
+        return () => document.removeEventListener('visibilitychange', onVisible);
+    }, []);
+
     const startRecording = async () => {
         if (!isRecordingSupported()) { showToast('הדפדפן הזה לא תומך בהקלטה', 'warn'); return; }
         if (!driveIsConnected()) { showToast('צריך לחבר את גוגל דרייב לפני הקלטה', 'warn'); return; }
@@ -1464,6 +1672,7 @@ const handleViewportPointerUp = (e) => {
             return;
         }
         sb.current.activeRecordingId = newRecordingId();
+        acquireWakeLock();
         setRecStatus('recording');
         setRecElapsed(0);
         if (sb.current.recTimer) clearInterval(sb.current.recTimer);
@@ -1480,6 +1689,7 @@ const handleViewportPointerUp = (e) => {
         const rec = sb.current.recorder;
         if (!rec) return;
         if (sb.current.recTimer) { clearInterval(sb.current.recTimer); sb.current.recTimer = null; }
+        releaseWakeLock();
         setRecStatus('uploading');
         const result = await rec.stop();
         sb.current.recorder = null;
@@ -1624,6 +1834,7 @@ const handleViewportPointerUp = (e) => {
         if (sb.current.recTimer) clearInterval(sb.current.recTimer);
         if (sb.current.playTimer) clearInterval(sb.current.playTimer);
         if (sb.current.recorder) sb.current.recorder.abort();
+        if (sb.current.wakeLock) sb.current.wakeLock.release().catch(() => {});
         if (sb.current.audioEl) { try { sb.current.audioEl.pause(); } catch { /* כבר עצר */ } }
     }, []);
 
@@ -1726,7 +1937,7 @@ const restore = (state) => {
         undo, redo, 
         toggleRecorder: () => setShowRecorder((v) => !v),
         isRecording: () => recStatus === 'recording' || recStatus === 'paused',
-        clearBoard: () => { deactivateBox(false); exitNodeEditMode(); dismissSnapChip(); dismissMathInk(); fCanvas.current.clear(); mathLayerRef.current.innerHTML = ''; saveState(); },
+        clearBoard: () => { deactivateBox(false); exitNodeEditMode(); dismissMathInk(); fCanvas.current.clear(); mathLayerRef.current.innerHTML = ''; saveState(); },
         // החישוב עבר ל-Web Worker. קודם הוא רץ בחוט הראשי, וביטוי כבד הקפיא
         // את הלוח לגמרי, בלי שום דרך לבטל.
         solveActiveBox: async () => {
@@ -1764,7 +1975,7 @@ const restore = (state) => {
         hasSelection: () => { const a = fCanvas.current?.getActiveObject(); return !!a && !a.isEditHelper; },
         updateActiveColor: (newColor) => { if (sb.current.activeBox) { sb.current.activeBox.style.color = newColor; saveState(); } },
         openBoardSettings: () => {
-            setBoardSettingsPos({ x: window.innerWidth / 2, y: 90 });
+            setBoardSettingsPos({ x: window.innerWidth / 2, y: 60 });
             setShowBoardSettings(true);
         },
         setPattern: (p) => {
@@ -2340,6 +2551,7 @@ const restore = (state) => {
 
         if (modeRef.current === 'laser') {
             sb.current.drawing = true;
+            sb.current.drawPointerId = e.pointerId;
             sb.current.hasMovedEnoughToDraw = true;
             pushLaser(screenX, screenY);
             return;
@@ -2359,6 +2571,7 @@ const restore = (state) => {
         if (modeRef.current !== 'draw' && modeRef.current !== 'erase') return;
 
         sb.current.drawing = true;
+        sb.current.drawPointerId = e.pointerId;
         sb.current.hasSnapped = false;
         sb.current.hasMovedEnoughToDraw = false;
         sb.current.points = [coords];
@@ -2367,7 +2580,6 @@ const restore = (state) => {
         sb.current.liveResult = null;
         sb.current.shiftPerfect = false;
         setInking(true);
-        if (sb.current.lastSnap) dismissSnapChip();
         const ctx = drawingCanvasRef.current.getContext('2d');
         ctx.lineCap = 'round'; ctx.lineJoin = 'round';
         ctx.clearRect(0, 0, drawingCanvasRef.current.width, drawingCanvasRef.current.height);
@@ -2399,6 +2611,9 @@ const restore = (state) => {
     };
 
     const handlePointerMove = (e) => {
+        // רק המצביע שהתחיל את המשיכה מצייר בה. אצבע או כף יד שנוגעות באמצע
+        // לא מוסיפות לה נקודות
+        if (sb.current.drawPointerId !== null && e.pointerId !== sb.current.drawPointerId) return;
         const perfectHeld = sb.current.perfectPointer !== undefined && sb.current.perfectPointer !== null;
         if (sb.current.isPanning || !sb.current.drawing || (sb.current.activePointers.size >= 2 && !perfectHeld)) return;
         if (perfectHeld && e.pointerId === sb.current.perfectPointer) return;
@@ -2430,6 +2645,13 @@ const restore = (state) => {
         if (sb.current.liveObj) {
             // Shift במחשב עושה מה שאצבע שנייה עושה בטאבלט — צורה מושלמת
             if (e.shiftKey && !sb.current.shiftPerfect) { sb.current.shiftPerfect = true; makeLivePerfect(); }
+            // החזקה קצרה של העט במקום, כשהצורה כבר חיה, הופכת אותה למושלמת
+            const lp = sb.current.perfectHold;
+            if (!lp || Math.hypot(coords.x - lp.x, coords.y - lp.y) * zoom > 3) {
+                clearTimeout(sb.current.perfectTimer);
+                sb.current.perfectHold = { x: coords.x, y: coords.y };
+                sb.current.perfectTimer = setTimeout(() => { if (sb.current.liveObj) makeLivePerfect(); }, 280);
+            }
             fCanvas.current.remove(sb.current.liveObj);
             const next = sb.current.liveRebuild ? sb.current.liveRebuild(coords) : null;
             if (next) {
@@ -2483,6 +2705,8 @@ const restore = (state) => {
             try { e.target.releasePointerCapture(e.pointerId); } catch { /* המצביע כבר שוחרר */ }
         }
         if (e && sb.current.perfectPointer === e.pointerId) return;
+        if (e && sb.current.drawPointerId !== null && e.pointerId !== sb.current.drawPointerId) return;
+        sb.current.drawPointerId = null;
 
         if (modeRef.current === 'laser') {
             // הזנב ממשיך לדעוך מעצמו אחרי ההרמה, ואין מה לשמור
@@ -2492,6 +2716,8 @@ const restore = (state) => {
 
         if (sb.current.isPanning) { setInking(false); return; }
         const p = penRef.current;
+        clearTimeout(sb.current.perfectTimer);
+        sb.current.perfectHold = null;
         if (sb.current.liveObj) {
             const obj = sb.current.liveObj;
             sb.current.liveObj = null;
@@ -2506,14 +2732,15 @@ const restore = (state) => {
             }
             if (p?.kind === 'highlighter') placeBelowInk(obj);
             saveState();
-            showSnapChip(obj, sb.current.liveResult, sb.current.liveVariantIndex, rawInk);
         } else if (sb.current.drawing && !sb.current.hasSnapped && modeRef.current === 'draw') {
             if (p.kind === 'wire') finishWire();
             else if (p.kind === 'highlighter') finishHighlighter();
             else if (p.kind === 'mathink') finishMathInk();
             else convertToScribble();   // הרמה בלי השהיה אף פעם לא מיישרת
         }
-        if (modeRef.current === 'erase' && sb.current.eraseChanged) saveState();
+        // הדגל מתאפס אחרי השמירה. אחרת כל הקשה בהמשך במצב מחק שמרה שוב
+        // ומחקה את מחסנית ה"בצע שוב"
+        if (modeRef.current === 'erase' && sb.current.eraseChanged) { sb.current.eraseChanged = false; saveState(); }
         sb.current.drawing = false; sb.current.points = []; sb.current.liveRebuild = null; clearTimeout(sb.current.snapTimeout);
         sb.current.inkStroke = null;
         clearLiveCanvas();
@@ -2646,6 +2873,11 @@ const restore = (state) => {
             sb.current.liveVariantIndex = result.variantIndex;
             sb.current.pendingRawInk = rawInk;
             sb.current.liveRebuild = makeLiveRebuild(result, sb.current.points[sb.current.points.length - 1]);
+            // העט עדיין במקום: אם יישאר עוד רגע קצר, הצורה תהפוך למושלמת
+            const lastPt = sb.current.points[sb.current.points.length - 1];
+            sb.current.perfectHold = { x: lastPt.x, y: lastPt.y };
+            clearTimeout(sb.current.perfectTimer);
+            sb.current.perfectTimer = setTimeout(() => { if (sb.current.liveObj) makeLivePerfect(); }, 280);
             fCanvas.current.add(obj);
         } else {
             // קודם מצב היסטוריה עם הדיו הגולמי, ורק אחריו הצורה המיושרת —
@@ -2658,7 +2890,6 @@ const restore = (state) => {
             fCanvas.current.add(obj);
             if (p.kind === 'highlighter') placeBelowInk(obj);
             saveState();
-            showSnapChip(obj, result, result.variantIndex, rawInk);
         }
         fCanvas.current.requestRenderAll();
         sb.current.points = [];
@@ -2809,68 +3040,6 @@ const restore = (state) => {
         sb.current.points = [];
     };
 
-    /* ── פירושים חלופיים לצורה שזוהתה ─────────────────────────────── */
-
-    const placeSnapChip = () => {
-        const snap = sb.current.lastSnap;
-        if (!snap || !fCanvas.current) return;
-        const b = snap.obj.getBoundingRect();
-        const zoom = fCanvas.current.getZoom();
-        const vpt = fCanvas.current.viewportTransform;
-        const x = (b.left + b.width / 2) * zoom + vpt[4];
-        const top = b.top * zoom + vpt[5];
-        const bottom = (b.top + b.height) * zoom + vpt[5];
-        const above = top > 130;
-        setSnapChip((c) => (c ? { ...c, x, y: above ? top - 12 : bottom + 12, above } : c));
-    };
-
-    /** מציג את השבב עם כל הפירושים, ליד הצורה שזה עתה נוצרה */
-    const showSnapChip = (obj, result, index, rawInk) => {
-        if (!result || !result.variants || result.variants.length < 2) { sb.current.lastSnap = null; setSnapChip(null); return; }
-        sb.current.lastSnap = { obj, variants: result.variants, rawInk, pen: penRef.current };
-        clearTimeout(sb.current.snapChipTimer);
-        sb.current.snapChipTimer = setTimeout(dismissSnapChip, 6500);
-        setSnapChip({ variants: result.variants.map((v) => ({ key: v.key, label: v.label })), index, x: 0, y: -999 });
-        requestAnimationFrame(placeSnapChip);
-    };
-
-    const dismissSnapChip = () => {
-        clearTimeout(sb.current.snapChipTimer);
-        sb.current.lastSnap = null;
-        setSnapChip(null);
-    };
-
-    /** החלפת הצורה בפירוש אחר — או חזרה לכתב היד המקורי, כשה־index הוא ‎-1 */
-    const chooseSnapVariant = (index) => {
-        const snap = sb.current.lastSnap;
-        if (!snap || !fCanvas.current) return;
-        const canvas = fCanvas.current;
-        let next;
-        if (index < 0) {
-            if (!snap.rawInk) return;
-            next = snap.rawInk;
-            snap.rawInk = null;
-        } else {
-            const savedPen = penRef.current;
-            penRef.current = snap.pen || savedPen;
-            next = buildShapeObject(snap.variants[index].shape, penRef.current);
-            penRef.current = savedPen;
-        }
-        const at = canvas.getObjects().indexOf(snap.obj);
-        if (at < 0) { dismissSnapChip(); return; }
-        if (sb.current.editingOriginalObj === snap.obj) exitNodeEditMode();
-        canvas.remove(snap.obj);
-        canvas.insertAt(at, next);
-        canvas.requestRenderAll();
-        snap.obj = next;
-        saveState();
-        if (index < 0) { dismissSnapChip(); return; }
-        clearTimeout(sb.current.snapChipTimer);
-        sb.current.snapChipTimer = setTimeout(dismissSnapChip, 6500);
-        setSnapChip((c) => (c ? { ...c, index } : c));
-        requestAnimationFrame(placeSnapChip);
-    };
-
     /* ── כתב יד מתמטי ─────────────────────────────────────────────── */
 
     /**
@@ -2994,6 +3163,32 @@ const restore = (state) => {
         if (!canvas) return;
         const dpr = window.devicePixelRatio || 1;
         canvas.getContext('2d').clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+    };
+
+    const lassoBegin = (clientX, clientY) => {
+        const c = getCanvasCoords(clientX, clientY);
+        sb.current.lasso = {
+            screen: [{ x: c.screenX, y: c.screenY }],
+            scene: [{ x: c.virtualX, y: c.virtualY }],
+            moved: false, startX: clientX, startY: clientY,
+        };
+    };
+    const lassoMove = (clientX, clientY) => {
+        const lasso = sb.current.lasso;
+        if (!lasso) return;
+        const c = getCanvasCoords(clientX, clientY);
+        lasso.screen.push({ x: c.screenX, y: c.screenY });
+        lasso.scene.push({ x: c.virtualX, y: c.virtualY });
+        if (Math.hypot(clientX - lasso.startX, clientY - lasso.startY) > 6) lasso.moved = true;
+        drawLasso(lasso.screen);
+    };
+    /** מסיים את הלאסו ומחזיר אותו, או null כשלא היה לאסו פעיל */
+    const lassoEnd = () => {
+        const lasso = sb.current.lasso;
+        if (!lasso) return null;
+        sb.current.lasso = null;
+        clearLasso();
+        return lasso;
     };
 
     const pointInPolygon = (pt, poly) => {
@@ -3256,6 +3451,13 @@ const restore = (state) => {
         setContextMenu((prev) => ({ ...prev, visible: false }));
     };
 
+    /** צבע לוח מהגדרות הלוח. נשמר מיד, ולא רק בציור הבא */
+    const pickBoardColor = (c) => {
+        setBoardColor(c);
+        boardColorRef.current = c;
+        if (onAutoSave) onAutoSave({ bg: c });
+    };
+
     const patternColorRGB = getPatternContrastColor(boardColor);
     // פרטי היעד של תפריט ההקשר, מחושבים פעם אחת לרינדור
     const cmTarget = contextMenu.visible ? contextMenu.target : null;
@@ -3264,6 +3466,15 @@ const restore = (state) => {
     const handleViewportPointerCancel = (e) => {
     // שים לב: לא מנקים את sb.current.longPressTimer כאן!
     // pointercancel מגיע לפני שהטיימר יורה — אם ננקה אותו, long press לא יעבוד לעולם
+    if (sb.current.ignoredPointers.delete(e.pointerId)) { e.stopPropagation(); return; }
+    const ps = sb.current.penSession;
+    if (ps && ps.id === e.pointerId) {
+        e.stopPropagation();
+        if (ps.inContact) penContactEnd(e);
+        sb.current.penSession = null;
+    }
+    if (sb.current.fingerPan && sb.current.fingerPan.id === e.pointerId) sb.current.fingerPan = null;
+    if (sb.current.perfectPointer === e.pointerId) sb.current.perfectPointer = null;
     sb.current.activePointers.delete(e.pointerId);
     if (sb.current.activePointers.size === 0) {
         sb.current.isPanning = false; setPanCursor(false);
@@ -3281,8 +3492,9 @@ const restore = (state) => {
             onPointerMoveCapture={handleViewportPointerMove}
             onPointerUpCapture={handleViewportPointerUp}
             onPointerCancelCapture={handleViewportPointerCancel}
+            onPointerLeave={handleViewportPointerLeave}
             style={{ 
-                width: '100vw', height: '100vh', overflow: 'hidden', 
+                width: '100%', height: '100%', overflow: 'hidden', 
                 position: 'relative', cursor: 'default',
                 touchAction: 'none' 
             }}>
@@ -3322,11 +3534,10 @@ const restore = (state) => {
         <div data-ui data-scrollable dir="rtl" style={{
             position: 'fixed',
             top: Math.max(10, Math.min(boardSettingsPos.y, window.innerHeight - 560)),
-            maxHeight: 'calc(100vh - 20px)', overflowY: 'auto',
+            maxHeight: 'calc(100dvh - 20px)', overflowY: 'auto',
             left: Math.max(10, Math.min(boardSettingsPos.x - 130, window.innerWidth - 280)),
             zIndex: 10001,
-            background: 'rgba(18, 18, 20, 0.97)',
-            backdropFilter: 'blur(28px)',
+            background: 'rgb(18, 18, 20)',
             border: '1px solid rgba(255,255,255,0.08)',
             borderRadius: '20px',
             padding: '20px',
@@ -3349,7 +3560,7 @@ const restore = (state) => {
                         { color: '#431407', label: 'אדום כהה' },
                         { color: '#ffffff', label: 'לבן' },
                     ].map(p => (
-                        <button key={p.color} title={p.label} onClick={() => setBoardColor(p.color)} style={{
+                        <button key={p.color} title={p.label} onClick={() => pickBoardColor(p.color)} style={{
                             width: '28px', height: '28px', borderRadius: '8px',
                             background: p.color, cursor: 'pointer', transition: '0.15s',
                             border: boardColor === p.color ? '2px solid #4ade80' : '1px solid rgba(255,255,255,0.15)',
@@ -3363,7 +3574,7 @@ const restore = (state) => {
                             border: '1px solid rgba(255,255,255,0.3)',
                             display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px',
                         }}>🎨</div>
-                        <input type="color" value={boardColor} onChange={e => setBoardColor(e.target.value)}
+                        <input type="color" value={boardColor} onChange={e => pickBoardColor(e.target.value)}
                             style={{ position: 'absolute', opacity: 0, inset: 0, cursor: 'pointer', width: '100%', height: '100%' }} />
                     </label>
                 </div>
@@ -3374,7 +3585,7 @@ const restore = (state) => {
                 <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '10px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>סוג לוח</div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
                     {PAPER_TYPES.map(({ id, label }) => ({ type: id, label, icon: { none: '◻', grid: '▦', engineering: '▦', lines: '≡', dots: '⠿', isometric: '◬', semilog: '⫼' }[id] })).map(opt => (
-                        <button key={opt.type} onClick={() => setBoardPatternType(opt.type)} style={{
+                        <button key={opt.type} onClick={() => { setBoardPatternType(opt.type); if (onAutoSave) onAutoSave({ pattern: opt.type }); }} style={{
                             padding: '9px 12px', borderRadius: '10px', border: 'none',
                             background: boardPatternType === opt.type ? 'rgba(74,222,128,0.15)' : 'rgba(255,255,255,0.05)',
                             color: boardPatternType === opt.type ? '#4ade80' : '#a1a1aa',
@@ -3430,7 +3641,7 @@ const restore = (state) => {
                     ))}
                 </div>
                 <div style={{ fontSize: '11px', color: '#71717a', marginTop: '7px', lineHeight: 1.5 }}>
-                    {SNAP_LEVELS.find((l) => l.id === snapLevel)?.hint} בכל רמה אפשר לעבור בין הפירושים בהקשה על השבב שמופיע מעל הצורה, 
+                    {SNAP_LEVELS.find((l) => l.id === snapLevel)?.hint} ״בטל״ אחד אחרי יישור מחזיר את כתב היד המקורי.
                 </div>
             </div>
 
@@ -3445,9 +3656,41 @@ const restore = (state) => {
                 </div>
             </div>
 
-            {/* דיו רגיש ללחץ ולהטיה */}
+            {/* העט: S Pen, כפתור הצד ודחיית כף היד. נשמר במכשיר ולא בלוח */}
             <div style={{ marginBottom: '16px' }}>
-                <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '10px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>עט</div>
+                <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '10px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>עט S Pen</div>
+                <SettingToggle
+                    on={isPenOnly(devicePrefs)}
+                    label="רק העט כותב, האצבע מזיזה את הלוח"
+                    onClick={() => updateDevicePrefs({ penOnly: !isPenOnly(devicePrefs) })}
+                />
+                <div style={{ fontSize: '11px', color: '#71717a', margin: '7px 0 12px', lineHeight: 1.5 }}>
+                    כף היד שמונחת על המסך בזמן הכתיבה לא מציירת ולא מזיזה את הלוח. נדלק מעצמו בפעם הראשונה שמזוהה עט.
+                </div>
+                <div style={{ fontSize: '11px', color: '#71717a', margin: '0 0 8px', fontWeight: 600 }}>לחיצה על כפתור הצד</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '5px' }}>
+                    {PEN_BUTTON_ACTIONS.map((a) => (
+                        <button key={a.id} title={a.hint} onClick={() => updateDevicePrefs({ penButton: a.id })} style={{
+                            padding: '8px 6px', borderRadius: '10px', border: 'none', cursor: 'pointer', fontSize: '12px',
+                            background: devicePrefs.penButton === a.id ? 'rgba(74,222,128,0.15)' : 'rgba(255,255,255,0.05)',
+                            color: devicePrefs.penButton === a.id ? '#4ade80' : '#a1a1aa',
+                            outline: devicePrefs.penButton === a.id ? '1px solid rgba(74,222,128,0.35)' : 'none',
+                        }}>{a.label}</button>
+                    ))}
+                </div>
+                <div style={{ fontSize: '11px', color: '#71717a', margin: '7px 0 12px', lineHeight: 1.5 }}>
+                    {PEN_BUTTON_ACTIONS.find((a) => a.id === devicePrefs.penButton)?.hint}.
+                    {HOLD_ACTIONS.includes(devicePrefs.penButton) ? ' מחזיקים את הכפתור וכותבים; כשמרימים, העט חוזר לכלי הקודם.' : ''}
+                    {' '}אם הכפתור פותח את Air command של סמסונג, אפשר לכבות אותו בהגדרות הטאבלט, תחת תכונות מתקדמות ואז S Pen.
+                </div>
+                <SettingToggle
+                    on={devicePrefs.lowLatency}
+                    label="השהיה נמוכה לדיו (ניסיוני)"
+                    onClick={() => { updateDevicePrefs({ lowLatency: !devicePrefs.lowLatency }); showToast('השינוי ייכנס לתוקף בפתיחה הבאה של הלוח'); }}
+                />
+                <div style={{ fontSize: '11px', color: '#71717a', margin: '7px 0 12px', lineHeight: 1.5 }}>
+                    הדיו החי מצויר ישר למסך, בלי לחכות לשאר הדף. מקצר את הפער בין קצה העט לקו. אם מופיע הבהוב, כבו.
+                </div>
                 <SettingToggle
                     on={pressureInk}
                     label="דיו רגיש ללחץ ולהטיה"
@@ -3512,7 +3755,7 @@ const restore = (state) => {
                 <div data-ui dir="rtl" style={{
                     position: 'fixed', bottom: '34px', left: '50%', transform: 'translateX(-50%)',
                     zIndex: 10002, padding: '11px 20px', borderRadius: '12px',
-                    background: 'rgba(24, 24, 27, 0.96)', backdropFilter: 'blur(20px)',
+                    background: 'rgb(24, 24, 27)',
                     border: toast.tone === 'warn' ? '1px solid rgba(253,224,71,0.35)' : '1px solid rgba(255,255,255,0.12)',
                     color: toast.tone === 'warn' ? '#fde047' : '#e4e4e7',
                     fontSize: '14px', fontWeight: 500, pointerEvents: 'none',
@@ -3550,7 +3793,7 @@ const restore = (state) => {
                 <div data-ui dir="rtl" style={{
                     position: 'fixed', bottom: '34px', left: '50%', transform: 'translateX(-50%)',
                     zIndex: 10002, padding: '10px 18px', borderRadius: '12px',
-                    background: 'rgba(24, 24, 27, 0.96)', backdropFilter: 'blur(20px)',
+                    background: 'rgb(24, 24, 27)',
                     border: '1px solid rgba(74,222,128,0.3)', color: '#4ade80',
                     fontSize: '14px', fontWeight: 500, pointerEvents: 'none',
                     boxShadow: '0 12px 32px rgba(0,0,0,0.5)',
@@ -3558,7 +3801,7 @@ const restore = (state) => {
             )}
 
             {contextMenu.visible && (
-                <div data-ui className="context-menu" dir="rtl" style={{ position: 'fixed', top: Math.max(10, Math.min(contextMenu.y, window.innerHeight - 330)), left: Math.max(10, Math.min(contextMenu.x, window.innerWidth - 250)), zIndex: 10000, background: 'rgba(24, 24, 27, 0.97)', backdropFilter: 'blur(20px)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '14px', padding: '12px', boxShadow: '0 16px 40px rgba(0,0,0,0.55)', color: 'white', display: 'flex', flexDirection: 'column', gap: '9px', width: '232px' }}>
+                <div data-ui className="context-menu" dir="rtl" style={{ position: 'fixed', top: Math.max(10, Math.min(contextMenu.y, window.innerHeight - 330)), left: Math.max(10, Math.min(contextMenu.x, window.innerWidth - 250)), zIndex: 10000, background: 'rgb(24, 24, 27)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '14px', padding: '12px', boxShadow: '0 16px 40px rgba(0,0,0,0.55)', color: 'white', display: 'flex', flexDirection: 'column', gap: '9px', width: '232px' }}>
                     {cmTarget && (
                         <>
                             <div style={{display: 'flex', gap: '6px', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap'}}>
@@ -3614,19 +3857,6 @@ const restore = (state) => {
                             }}>הגדרות לוח</button>
                         </>
                     )}
-                </div>
-            )}
-
-            {/* ── פירושים לצורה שזוהתה ── */}
-            {snapChip && (
-                <div data-ui className="board-chip" dir="rtl" role="toolbar" aria-label="פירושים לצורה"
-                    style={{ left: Math.max(10, Math.min(window.innerWidth - 10, snapChip.x)), top: snapChip.y, transform: `translate(-50%, ${snapChip.above ? '-100%' : '0'})` }}>
-                    {snapChip.variants.map((v, i) => (
-                        <button key={v.key} className={snapChip.index === i ? 'on' : ''} onClick={() => chooseSnapVariant(i)}>{v.label}</button>
-                    ))}
-                    <span className="chip-sep" />
-                    <button onClick={() => chooseSnapVariant(-1)} title="ביטול היישור — חזרה לכתב היד המקורי">כתב יד</button>
-                    <button onClick={dismissSnapChip} aria-label="סגור"><Icon name="close" size={13} /></button>
                 </div>
             )}
 

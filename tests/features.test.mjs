@@ -7,16 +7,17 @@
  *     TEXO_DIR=/path/to/Texo-web/models/model node tests/features.test.mjs
  */
 import { chromium } from 'playwright';
+import { fileURLToPath } from 'url';
 import { createServer } from 'http';
 import { readFile } from 'fs/promises';
 import { extname, join, normalize } from 'path';
 
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml', '.wasm': 'application/wasm', '.webmanifest': 'application/manifest+json', '.woff2': 'font/woff2', '.ico': 'image/x-icon' };
-const root = new URL('../dist/', import.meta.url).pathname;
+const root = fileURLToPath(new URL('../dist/', import.meta.url));
 const server = createServer(async (req, res) => {
   try {
     const p = normalize(join(root, decodeURIComponent(req.url.split('?')[0])));
-    const file = p.endsWith('/') ? join(p, 'index.html') : p;
+    const file = (p.endsWith('/') || p.endsWith('\\')) ? join(p, 'index.html') : p;
     const body = await readFile(file);
     res.writeHead(200, { 'Content-Type': TYPES[extname(file)] || 'application/octet-stream' });
     res.end(body);
@@ -26,7 +27,7 @@ await new Promise((r) => server.listen(0, r));
 const url = `http://127.0.0.1:${server.address().port}/`;
 
 const SHOTS = process.env.SHOTS || null;
-const browser = await chromium.launch({ executablePath: process.env.CHROMIUM || '/opt/pw-browsers/chromium' });
+const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
 const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, hasTouch: true });
 const TEXO = process.env.TEXO_DIR;
 if (TEXO) {
@@ -90,10 +91,10 @@ await page.waitForTimeout(500);
 check('הסרגל החדש מוצג', await page.locator('.pb-dock').isVisible());
 check('שלושה עטים בלבד כברירת מחדל', (await page.locator('[role=radiogroup] .pb-btn:not(.pb-add)').count()) === 3);
 check('  עט, לורד ומדגיש', (await page.locator('[role=radiogroup] .pb-btn-label').allInnerTexts()).join(',') === 'עט,לורד,מדגיש');
-check('סרגל צבעים נפרד מתחת לסרגל הכלים', (await page.locator('.pb-colorbar .pb-swatch').count()) === 7);
+check('הצבעים בתוך הסרגל עצמו', (await page.locator('.pb-dock .pb-colorbar .pb-swatch').count()) === 7);
 const dockBox = await page.locator('.pb-dock').boundingBox();
-const barBox = await page.locator('.pb-colorbar').boundingBox();
-check('  והוא ממוקם מתחת לסרגל', barBox.y >= dockBox.y + dockBox.height - 2);
+check('  והסרגל דק — פס אחד בגובה 42 פיקסלים לכל היותר', dockBox.height <= 42, `${dockBox.height}`);
+check('  הבית, ביטול וחזרה בתוך הסרגל ולא בפינות', (await page.locator('.pb-dock .pb-btn[aria-label^="בטל"]').count()) === 1);
 check('יש גישה לקנבס לבדיקות', Array.isArray(await objects()));
 await shot('01-board');
 
@@ -110,16 +111,12 @@ let objs = await objects();
 const sq = objs.find((o) => o.customType === 'rect');
 check('ריבוע מרושל נשמר כמלבן', !!sq, JSON.stringify(objs));
 check('  ושני צלעותיו שוות — ריבוע', sq && Math.abs(sq.w - sq.h) < 2, sq ? `${sq.w}x${sq.h}` : '');
-check('שבב הפירושים מופיע', await page.locator('.board-chip').first().isVisible());
-await shot('02-snap-chip');
-await page.locator('.board-chip button', { hasText: 'כפי שצויר' }).click();
-await page.waitForTimeout(200);
+check('אין תפריט ששואל איזו צורה התכוונו לצייר', (await page.locator('.board-chip').count()) === 0);
+await shot('02-snapped');
+await page.evaluate(() => window.__pbBoard?.undo());
+await page.waitForTimeout(250);
 objs = await objects();
-check('מעבר לפירוש "כפי שצויר" מחליף לצורה העקומה', objs.some((o) => o.customType === 'polygon') && !objs.some((o) => o.customType === 'rect'), JSON.stringify(objs.map((o) => o.customType)));
-await page.locator('.board-chip button', { hasText: 'ריבוע' }).click();
-await page.waitForTimeout(150);
-objs = await objects();
-check('  וחזרה לריבוע בהקשה', objs.some((o) => o.customType === 'rect'));
+check('  ״בטל״ אחד מחזיר את כתב היד המקורי', objs.length === 1 && objs[0].customType === 'ink', JSON.stringify(objs.map((o) => o.customType)));
 await clearBoard();
 
 /* ── 2. מדגיש ── */
@@ -161,7 +158,6 @@ await clearBoard();
 await pens.nth(0).click();
 await stroke(trace([{ x: 300, y: 250 }, { x: 400, y: 250 }, { x: 400, y: 350 }, { x: 300, y: 350 }]), { hold: 700 });
 await page.waitForTimeout(250);
-await page.locator('.board-chip button[aria-label="סגור"]').first().click().catch(() => {});
 await page.mouse.click(400, 300);         // הקשה כפולה בוחרת את הצורה
 await page.mouse.click(400, 300);
 await page.waitForTimeout(250);

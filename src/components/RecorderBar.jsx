@@ -27,9 +27,11 @@ const RecorderBar = ({
             dir="rtl"
             onPointerDown={(e) => e.stopPropagation()}
             style={{
-                position: 'fixed', top: '16px', left: '50%', transform: 'translateX(-50%)',
+                // מתחת לסרגל הכלים הדק, ולא מעליו
+                position: 'fixed', top: 'calc(env(safe-area-inset-top, 0px) + 62px)', left: '50%', transform: 'translateX(-50%)',
                 zIndex: 10001, width: 'min(560px, calc(100vw - 24px))',
-                background: 'rgba(24,24,27,0.94)', backdropFilter: 'blur(18px)',
+                // רקע אטום ולא טשטוש: טשטוש מעל לוח שמתעדכן בכל משיכה מחושב מחדש בכל פריים
+                background: 'rgb(24,24,27)',
                 border: '1px solid rgba(255,255,255,0.1)', borderRadius: '16px',
                 boxShadow: '0 12px 34px rgba(0,0,0,0.45)', padding: '12px 14px', color: '#e4e4e7',
             }}
