@@ -26,7 +26,7 @@
   position: fixed; z-index: 1001; display: flex; align-items: center;
   touch-action: none;
 }
-.pb-wrap.side-top { top: calc(env(safe-area-inset-top, 0px) + var(--pb-edge)); left: 50%; transform: translateX(-50%); max-width: calc(100vw - 16px); }
+.pb-wrap.side-top { top: calc(env(safe-area-inset-top, 0px) + var(--pb-edge)); left: 50%; transform: translateX(-50%); max-width: calc(100vw - 132px); }
 .pb-wrap.side-bottom { bottom: calc(env(safe-area-inset-bottom, 0px) + var(--pb-edge)); left: 50%; transform: translateX(-50%); max-width: calc(100vw - 16px); }
 .pb-wrap.side-left { left: calc(env(safe-area-inset-left, 0px) + var(--pb-edge)); top: 50%; transform: translateY(-50%); max-height: calc(100dvh - 16px); }
 .pb-wrap.side-right { right: calc(env(safe-area-inset-right, 0px) + var(--pb-edge)); top: 50%; transform: translateY(-50%); max-height: calc(100dvh - 16px); }
@@ -45,6 +45,19 @@
   flex-direction: column; height: auto; width: 40px; max-width: none; max-height: calc(100dvh - 16px);
   overflow-x: hidden; overflow-y: auto; touch-action: pan-y;
 }
+
+/* ── פינות: בית, ביטול וחזרה, כמו קודם ── */
+.pb-corner {
+  display: flex; align-items: center; justify-content: center;
+  width: 40px; height: 40px; border-radius: 12px;
+  background: rgb(26, 26, 30); color: var(--pb-muted);
+  border: 1px solid var(--pb-line); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.32);
+  cursor: pointer; transition: background .15s, color .15s; padding: 0;
+}
+.pb-corner:hover { background: rgb(40, 40, 46); color: #fff; }
+.pb-corner-left { position: fixed; top: calc(env(safe-area-inset-top, 0px) + 8px); left: calc(env(safe-area-inset-left, 0px) + 8px); z-index: 1000; }
+.pb-corner-group { position: fixed; top: calc(env(safe-area-inset-top, 0px) + 8px); right: calc(env(safe-area-inset-right, 0px) + 8px); z-index: 1000; display: flex; gap: 8px; }
+body[data-inking="1"] .pb-corner, body[data-inking="1"] .pb-corner-group { pointer-events: none; }
 
 /* בזמן משיכה הסרגל נשאר גלוי לגמרי, ורק לא מגיב — כף יד שעוברת עליו לא לוחצת על כלים */
 body[data-inking="1"] .pb-wrap { pointer-events: none; }

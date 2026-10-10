@@ -314,6 +314,17 @@ export default function Toolbar({
 
     return (
         <>
+            {/* ── בית, ביטול וחזרה: כפתורי פינה נפרדים מהסרגל ── */}
+            {onBack && (
+                <button title="חזרה ללוחות שלי" aria-label="חזרה ללוחות שלי" className="pb-corner pb-corner-left" onClick={onBack}>
+                    <Icon name="home" size={18} />
+                </button>
+            )}
+            <div className="pb-corner-group">
+                <button title="בטל (Ctrl+Z, הקשה בשתי אצבעות)" aria-label="בטל" className="pb-corner" onClick={() => act('undo')}><Icon name="undo" size={18} /></button>
+                <button title="בצע שוב (Ctrl+Y, הקשה בשלוש אצבעות)" aria-label="בצע שוב" className="pb-corner" onClick={() => act('redo')}><Icon name="redo" size={18} /></button>
+            </div>
+
             {drag && drag.moved && SIDES.map((sd) => <div key={sd} className={`pb-dock-target edge-${sd} ${drag.edge === sd ? 'hot' : ''}`} />)}
 
             {/* ── הסרגל: פס דק אחד, עם הבית, ביטול וחזרה, הכלים, הצבעים והעוביים ── */}
@@ -330,16 +341,9 @@ export default function Toolbar({
                         <>
                             <DockButton icon={kind.icon} label="" title="פתח את הסרגל" active={mode === 'draw'} color={shownColor}
                                 onClick={() => setDock((d) => ({ ...d, collapsed: false }))} />
-                            <DockButton icon="undo" label="בטל" title="בטל" onClick={() => act('undo')} />
                         </>
                     ) : (
                         <>
-                            {onBack && <DockButton icon="home" label="הלוחות שלי" title="חזרה ללוחות שלי" className="pb-home" onClick={onBack} />}
-                            <div className="pb-group">
-                                <DockButton icon="undo" label="בטל" title="בטל (Ctrl+Z, הקשה בשתי אצבעות)" onClick={() => act('undo')} />
-                                <DockButton icon="redo" label="בצע שוב" title="בצע שוב (Ctrl+Y, הקשה בשלוש אצבעות)" onClick={() => act('redo')} />
-                            </div>
-                            <div className="pb-sep" />
                             <div className="pb-group" role="radiogroup" aria-label="עטים">
                                 {pens.map((p, i) => (
                                     <DockButton key={p.id} icon={PEN_KINDS[p.kind].icon} label={PEN_KINDS[p.kind].label}

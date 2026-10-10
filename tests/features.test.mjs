@@ -94,7 +94,7 @@ check('  עט, לורד ומדגיש', (await page.locator('[role=radiogroup] .p
 check('הצבעים בתוך הסרגל עצמו', (await page.locator('.pb-dock .pb-colorbar .pb-swatch').count()) === 7);
 const dockBox = await page.locator('.pb-dock').boundingBox();
 check('  והסרגל דק — פס אחד בגובה 42 פיקסלים לכל היותר', dockBox.height <= 42, `${dockBox.height}`);
-check('  הבית, ביטול וחזרה בתוך הסרגל ולא בפינות', (await page.locator('.pb-dock .pb-btn[aria-label^="בטל"]').count()) === 1);
+check('  הבית, ביטול וחזרה בפינות, נפרדים מהסרגל', (await page.locator('.pb-corner').count()) === 3 && (await page.locator('.pb-dock .pb-corner').count()) === 0);
 check('יש גישה לקנבס לבדיקות', Array.isArray(await objects()));
 await shot('01-board');
 
