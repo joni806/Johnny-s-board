@@ -52,6 +52,38 @@ const r = await pg.evaluate(async()=>{
 check('כפתור העט (contextmenu מוקדם) מוחק ולא מצייר', r.afterButton === 3, JSON.stringify(r));
 check('  ואחרי ההרמה העט חוזר לכתוב', r.mode === 'עט');
 check('לחיצה ארוכה רגילה לא נחשבת לכפתור', r.afterLateLongPress === 4, JSON.stringify(r));
+
+// כמו ביומן מהטאבלט: contextmenu בלי סוג עט, שמגיע רק אחרי שהעט הורם
+const late = await pg.evaluate(async()=>{
+  const sleep=(ms)=>new Promise(r=>setTimeout(r,ms)); const cv=document.getElementById('drawing-canvas');
+  const ev=(t,x,y,b,p)=>cv.dispatchEvent(new PointerEvent(t,{bubbles:true,cancelable:true,clientX:x,clientY:y,pointerId:11,pointerType:'pen',pressure:p,buttons:b,button:t==='pointermove'?-1:0,isPrimary:true}));
+  const n=()=>window.__pbCanvas.getObjects().length;
+  window.__pbBoard.clearBoard(); await sleep(200);
+  ev('pointerdown',300,400,1,.4); for(let x=300;x<600;x+=10){ev('pointermove',x,400+5*Math.sin(x/20),1,.4);await sleep(4)} ev('pointerup',600,400,0,0); await sleep(150);
+  const start=n();
+  ev('pointerdown',450,330,1,.08); ev('pointermove',450,340,1,.2);
+  for(let y=345;y<470;y+=6){ev('pointermove',450,y,1,.3);await sleep(4)} ev('pointerup',450,470,0,0);
+  await sleep(30);
+  cv.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:450,clientY:330}));
+  await sleep(250);
+  return { start, after:n(), settings: document.body.innerText.includes('צבע לוח') };
+});
+check('contextmenu מאוחר בלי סוג עט: המשיכה מוחקת במקום לצייר', late.start === 1 && late.after === 2, JSON.stringify(late));
+check('  ולא נפתחות הגדרות הלוח', !late.settings);
+
+// כפתור שמהבהב בריחוף: נלחץ ושוחרר רגע לפני המגע
+const flick = await pg.evaluate(async()=>{
+  const sleep=(ms)=>new Promise(r=>setTimeout(r,ms)); const cv=document.getElementById('drawing-canvas');
+  const ev=(t,x,y,b,p)=>cv.dispatchEvent(new PointerEvent(t,{bubbles:true,cancelable:true,clientX:x,clientY:y,pointerId:12,pointerType:'pen',pressure:p,buttons:b,button:t==='pointermove'?-1:0,isPrimary:true}));
+  const n=()=>window.__pbCanvas.getObjects().length;
+  await sleep(800); const start=n();
+  ev('pointermove',520,330,1,0); ev('pointermove',521,331,0,0); await sleep(60);
+  ev('pointerdown',520,330,1,.1); for(let y=335;y<470;y+=6){ev('pointermove',520,y,1,.3);await sleep(4)} ev('pointerup',520,470,0,0);
+  await sleep(250);
+  const tall = window.__pbCanvas.getObjects().filter((o)=>o.getBoundingRect().height > 80).length;
+  return { start, after:n(), tall };
+});
+check('כפתור שמהבהב בריחוף עדיין מפעיל את המחק', flick.after > flick.start && flick.tall === 0, JSON.stringify(flick));
 check('אין שגיאות ריצה', errs.length === 0, errs.join(' | '));
 await b.close(); s.close();
 process.exit(fail ? 1 : 0);
