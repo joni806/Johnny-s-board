@@ -748,7 +748,7 @@ window.addEventListener('pointercancel', handleGlobalPointerGone);
            לכן כל contextmenu שמגיע מיד אחרי פעילות של העט שייך לכפתור. הוא
            נתפס כבר בשלב ה־capture, כדי שלא יגיע למאזין של הלוח ויפתח את ההגדרות */
         const penContextMenu = (e) => {
-            const recentPen = e.pointerType === 'pen' || sb.current.penDown || e.timeStamp - (sb.current.lastPenAt ?? -1e9) < 700;
+            const recentPen = e.pointerType === 'pen' || sb.current.penDown || e.timeStamp - (sb.current.lastPenAt ?? -1e9) < 8000;
             if (sb.current.penDebug) setPenLog((l) => [`contextmenu ${e.pointerType || '?'} +${Math.round(e.timeStamp - (sb.current.strokeStartAt ?? e.timeStamp))}ms${recentPen ? ' (עט)' : ''}`, ...l].slice(0, 14));
             if (!recentPen) return;
             e.preventDefault();
@@ -980,7 +980,9 @@ window.removeEventListener('pointercancel', handleGlobalPointerGone);
         const cx = e.clientX;
         const cy = e.clientY;
 
-     sb.current.longPressTimer = setTimeout(() => {
+     // בטאבלט עם עט, לחיצה ארוכה פותחת תפריט רק באצבע. עט, או "עכבר" ש־Chrome
+     // מייצר מהעט אחרי לחיצה ארוכה, לא פותחים את ההגדרות באמצע ציור
+     if (e.pointerType === 'touch' || !devicePrefsRef.current.penSeen) sb.current.longPressTimer = setTimeout(() => {
     sb.current.longPressTimer = null;
     // אם הונחה אצבע שנייה, זו הקשה בשתי אצבעות ולא לחיצה ארוכה
     if (sb.current.activePointers.size !== 1 || sb.current.multiTouchMaxFingers >= 2) return;
@@ -1279,6 +1281,9 @@ const handleViewportPointerUp = (e) => {
         e.preventDefault();
         // לחיצה ארוכה במגע מעלה גם אירוע contextmenu — הטיימר כבר מטפל בה
         if (sb.current.longPressFired || e.pointerType === 'touch' || e.pointerType === 'pen') return;
+        // בטאבלט עם עט, contextmenu הוא כמעט תמיד הלחיצה הארוכה ש־Chrome מייצר מהעט,
+        // לפעמים בלי סימון של עט ושניות אחרי המשיכה. תפריטים נפתחים שם רק באצבע
+        if (devicePrefsRef.current.penSeen && e.timeStamp - (sb.current.lastPenAt ?? -1e9) < 8000) return;
         // מערכות מסוימות הופכות הקשה בשתי אצבעות ללחיצה ימנית. זו לא בקשה לתפריט
         if (sb.current.activePointers.size >= 2 || sb.current.multiTouchMaxFingers >= 2 || (e.timeStamp - (sb.current.lastTouchEventAt || -1e9)) < 900) return;
         handleContextMenuAction(e.clientX, e.clientY);
@@ -1631,7 +1636,9 @@ const handleViewportPointerUp = (e) => {
         }
         // העט כבר הורם: הכפתור מוחל על המשיכה שזה עתה נכתבה
         const ls = sb.current.lastStroke;
-        if (ls && !ls.handled && e.timeStamp - ls.endAt < 700 && e.timeStamp - ls.startAt < 1500) {
+        // רק משיכה שזזה כבר בהתחלה: הלחיצה הארוכה של הכפתור נוצרת בתזוזה הראשונה,
+        // ולחיצה ארוכה רגילה רק כשהעט עומד במקום. בלי זה, לחיצה ארוכה הפכה למחק
+        if (ls && !ls.handled && ls.earlyMoved && e.timeStamp - ls.endAt < 700 && e.timeStamp - ls.startAt < 1500) {
             ls.handled = true;
             applyButtonToFinishedStroke(ls);
             return true;
@@ -2897,6 +2904,7 @@ const restore = (state) => {
         sb.current.drawPointerId = e.pointerId;
         sb.current.strokeStartAt = e.timeStamp;
         sb.current.strokeStart = { x: e.clientX, y: e.clientY };
+        sb.current.earlyMoved = false;
         sb.current.hasSnapped = false;
         sb.current.hasMovedEnoughToDraw = false;
         sb.current.points = [coords];
@@ -2947,6 +2955,9 @@ const restore = (state) => {
             pushLaser(l.screenX, l.screenY);
             return;
         }
+        // תזוזה בחלק הראשון של המשיכה: לחיצה ארוכה רגילה דורשת עט שעומד במקום
+        if (!sb.current.earlyMoved && sb.current.strokeStart && e.timeStamp - (sb.current.strokeStartAt ?? 0) < 380
+            && Math.hypot(e.clientX - sb.current.strokeStart.x, e.clientY - sb.current.strokeStart.y) > 10) sb.current.earlyMoved = true;
         // אין ציור עד תזוזה של 5 פיקסלים, כדי שלחיצה ארוכה לא תשאיר נקודה
         if (!sb.current.hasMovedEnoughToDraw) {
             const moved = Math.hypot(e.clientX - sb.current.longPressStartX, e.clientY - sb.current.longPressStartY);
@@ -3070,7 +3081,7 @@ const restore = (state) => {
                 sb.current.lastStroke = {
                     objs: fCanvas.current.getObjects().filter((o) => !before.has(o)), points: strokePts,
                     startAt: sb.current.strokeStartAt ?? e.timeStamp, endAt: e.timeStamp,
-                    screenEnd: { x: e.clientX, y: e.clientY }, handled: false,
+                    screenEnd: { x: e.clientX, y: e.clientY }, handled: false, earlyMoved: !!sb.current.earlyMoved,
                 };
             }
         }
