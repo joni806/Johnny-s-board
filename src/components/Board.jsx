@@ -909,17 +909,14 @@ window.removeEventListener('pointercancel', handleGlobalPointerGone);
     }
 
 // לחיצה ארוכה — רק אצבע אחת
-    if (sb.current.activePointers.size === 1 && penWriting) {
-        sb.current.longPressStartX = e.clientX;
-        sb.current.longPressStartY = e.clientY;
-        sb.current.lastTapTime = 0;
-    } else if (sb.current.activePointers.size === 1) {
+    if (sb.current.activePointers.size === 1) {
         // ← זיהוי לחיצה כפולה למעבר מעיגולים כחולים → מסגרת לבנה
         // זמן האירוע עצמו ולא Date.now — אותו שעון לכל האירועים, ובלי קריאה לא טהורה
         const now = e.timeStamp;
         sb.current.touchStartTime = now;     // תחילת המגע, למדידת הקשה בשתי אצבעות או שלוש
         if (e.pointerType === 'touch') sb.current.lastTouchEventAt = now;
-        const timeSinceLastTap = now - sb.current.lastTapTime;
+        // עט בכלי כתיבה: בלי לחיצה כפולה, כדי שנקודתיים או שלוש נקודות לא יעבירו לבחירה
+        const timeSinceLastTap = penWriting ? Infinity : now - sb.current.lastTapTime;
         const tapDist = Math.hypot(e.clientX - sb.current.lastTapX, e.clientY - sb.current.lastTapY);
         sb.current.lastTapTime = now;
         sb.current.lastTapX = e.clientX;
@@ -980,10 +977,11 @@ window.removeEventListener('pointercancel', handleGlobalPointerGone);
         const cx = e.clientX;
         const cy = e.clientY;
 
-     // בטאבלט עם עט, לחיצה ארוכה פותחת תפריט רק באצבע. עט, או "עכבר" ש־Chrome
-     // מייצר מהעט אחרי לחיצה ארוכה, לא פותחים את ההגדרות באמצע ציור
-     if (e.pointerType === 'touch' || !devicePrefsRef.current.penSeen) sb.current.longPressTimer = setTimeout(() => {
+     // לחיצה ארוכה, עם עט שעומד במקום או עם אצבע, פותחת את הגדרות הלוח. "עכבר"
+     // ש־Chrome מייצר מהעט בטאבלט לא נחשב. משיכה עם כפתור הצד לא מגיעה לכאן בכלל
+     if (e.pointerType !== 'mouse' || !devicePrefsRef.current.penSeen) sb.current.longPressTimer = setTimeout(() => {
     sb.current.longPressTimer = null;
+    if (sb.current.penSession) return;
     // אם הונחה אצבע שנייה, זו הקשה בשתי אצבעות ולא לחיצה ארוכה
     if (sb.current.activePointers.size !== 1 || sb.current.multiTouchMaxFingers >= 2) return;
     sb.current.longPressFired = true;
@@ -1032,7 +1030,7 @@ window.removeEventListener('pointercancel', handleGlobalPointerGone);
             setContextMenu({ visible: false, x: 0, y: 0, target: null });
         }
     }
-}, 500);
+}, e.pointerType === 'pen' ? 550 : 500);
     }
 
     if (sb.current.activePointers.size >= 2) {

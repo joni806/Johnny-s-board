@@ -51,7 +51,9 @@ const r = await pg.evaluate(async()=>{
 });
 check('כפתור העט (contextmenu מוקדם) מוחק ולא מצייר', r.afterButton === 3, JSON.stringify(r));
 check('  ואחרי ההרמה העט חוזר לכתוב', r.mode === 'עט');
-check('לחיצה ארוכה רגילה לא נחשבת לכפתור', r.afterLateLongPress === 4, JSON.stringify(r));
+check('לחיצה ארוכה רגילה לא נחשבת לכפתור ולא מוחקת', r.afterLateLongPress === 3, JSON.stringify(r));
+check('  היא פותחת את הגדרות הלוח', await pg.evaluate(() => document.body.innerText.includes('צבע לוח')));
+await pg.mouse.click(5, 790); await pg.waitForTimeout(200);
 
 // כמו ביומן מהטאבלט: contextmenu בלי סוג עט, שמגיע רק אחרי שהעט הורם
 const late = await pg.evaluate(async()=>{
@@ -85,7 +87,7 @@ const flick = await pg.evaluate(async()=>{
 });
 check('כפתור שמהבהב בריחוף עדיין מפעיל את המחק', flick.after > flick.start && flick.tall === 0, JSON.stringify(flick));
 
-// לחיצה ארוכה רגילה בעט, בלי כפתור: Chrome שולח contextmenu רק בהרמה. אסור שזה יהפוך למחק או יפתח הגדרות
+// לחיצה ארוכה בעט על הלוח, בלי כפתור: פותחת את הגדרות הלוח, ולא מוחקת ולא מציירת
 const lp = await pg.evaluate(async()=>{
   const sleep=(ms)=>new Promise(r=>setTimeout(r,ms)); const cv=document.getElementById('drawing-canvas');
   const ev=(t,x,y,b,p)=>cv.dispatchEvent(new PointerEvent(t,{bubbles:true,cancelable:true,clientX:x,clientY:y,pointerId:13,pointerType:'pen',pressure:p,buttons:b,button:t==='pointermove'?-1:0,isPrimary:true}));
@@ -93,17 +95,17 @@ const lp = await pg.evaluate(async()=>{
   window.__pbBoard.clearBoard(); await sleep(200);
   ev('pointerdown',300,400,1,.4); for(let x=300;x<600;x+=10){ev('pointermove',x,400,1,.4);await sleep(4)} ev('pointerup',600,400,0,0); await sleep(900);
   const start=n();
-  // עומד במקום חצי שנייה על הקו, ואז ממשיך לכתוב
-  ev('pointerdown',450,400,1,.4); await sleep(600);
-  for(let y=402;y<480;y+=6){ev('pointermove',450,y,1,.4);await sleep(4)} ev('pointerup',450,480,0,0);
-  await sleep(30);
-  cv.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:450,clientY:400}));
+  ev('pointerdown',800,600,1,.4); for(let k=0;k<12;k++){ev('pointermove',800+(k%2),600,1,.4);await sleep(60)}
+  ev('pointerup',800,600,0,0); await sleep(30);
+  // Chrome שולח את ה־contextmenu של הלחיצה הארוכה רק בהרמה
+  cv.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:800,clientY:600}));
   await sleep(250);
   return { start, after:n(), settings: document.body.innerText.includes('צבע לוח'), mode: document.querySelector('.pb-btn.active .pb-btn-label')?.innerText };
 });
-check('לחיצה ארוכה רגילה בעט מציירת ולא מוחקת', lp.start === 1 && lp.after === 2, JSON.stringify(lp));
-check('  ולא פותחת את הגדרות הלוח', !lp.settings);
+check('לחיצה ארוכה בעט פותחת את הגדרות הלוח', lp.settings, JSON.stringify(lp));
+check('  בלי למחוק ובלי לצייר', lp.start === 1 && lp.after === 1, JSON.stringify(lp));
 check('  והעט נשאר עט', lp.mode === 'עט', lp.mode);
+await pg.mouse.click(5, 790); await pg.waitForTimeout(200);
 check('אין שגיאות ריצה', errs.length === 0, errs.join(' | '));
 await b.close(); s.close();
 process.exit(fail ? 1 : 0);
