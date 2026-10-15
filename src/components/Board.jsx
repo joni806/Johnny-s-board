@@ -35,6 +35,12 @@ import { solveExpression, runCasAction, terminateMathWorker } from '../utils/mat
 
 const fabric = fabricPkg.fabric || fabricPkg;
 
+// Fabric שומר לכל אובייקט בועת ציור משלו (objectCaching) ומציירה מחדש בכל שינוי זום.
+// בלוח עם מאות משיכות זה אומר מאות קנבסים שנבנים מחדש בכל זום, והמסך נתקע לשניות.
+// משיכת דיו קלה לציור ישיר, ולכן המטמון כבוי לכולם. הוא גם לא נשמר בקובץ, כך שלוח
+// שנטען מהדיסק או אחרי "בטל" קיבל מטמון דלוק על כל אובייקט.
+if (fabric.FabricObject?.ownDefaults) fabric.FabricObject.ownDefaults.objectCaching = false;
+
 /* ── מסגרת עם ארבע פינות בלבד ──
    כל פינה מותחת לפי כיוון התנועה, ובכל רגע של הגרירה מחדש: משיכה הצידה
    מותחת רק לרוחב, משיכה למעלה או למטה רק לאורך, ומשיכה באלכסון מותחת את
@@ -1924,6 +1930,7 @@ const handleViewportPointerUp = (e) => {
         }
         if (!sb.current.pendingSave) return;
         sb.current.pendingSave = false;
+        const t0 = performance.now();
         const state = captureState();
         if (!state) return;
         const stack = sb.current.historyStack;
@@ -1935,6 +1942,8 @@ const handleViewportPointerUp = (e) => {
         const seen = prev ? new Set(prev.strs) : null;
         entry.cost = entry.prefix.length + entry.tail.length + entry.math.length;
         for (const str of entry.strs) if (!seen || !seen.has(str)) entry.cost += str.length;
+        // זמן הצילום האחרון, לאבחון מהקונסולה: window.__pbPerf
+        window.__pbPerf = { ...(window.__pbPerf || {}), flushMs: Math.round(performance.now() - t0), objects: entry.strs.length };
         stack.push(entry);
         sb.current.historyBytes = (sb.current.historyBytes || 0) + entry.cost;
         while (stack.length > HISTORY_MAX_STEPS
@@ -1977,6 +1986,10 @@ const handleViewportPointerUp = (e) => {
         sb.current.redoStack = [];
         scheduleInkRefresh();
         scheduleHistory();
+        queueAutosave();
+    };
+
+    const queueAutosave = () => {
         if (onAutoSave) {
             if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
             const runAutosave = () => {
@@ -2312,16 +2325,58 @@ const handleViewportPointerUp = (e) => {
         const popped = sb.current.historyStack.pop();
         sb.current.historyBytes = Math.max(0, (sb.current.historyBytes || 0) - popped.cost);
         sb.current.redoStack.push(popped);
-        restore(JSON.parse(entryJson(sb.current.historyStack[sb.current.historyStack.length - 1])));
+        applyEntry(popped, sb.current.historyStack[sb.current.historyStack.length - 1]);
+    };
+
+    /**
+     * עובר ממצב הלוח `from` למצב `to`. בדרך כלל שני המצבים נבדלים במשיכה אחת או
+     * שתיים, ולכן מחליפים רק אותן ולא בונים מחדש את כל הלוח (loadFromJSON לכל
+     * האובייקטים לקח שניות בלוח גדול, והחליף גם את כל האובייקטים שלא השתנו).
+     */
+    const applyEntry = (from, to) => {
+        const fallback = () => restore(JSON.parse(entryJson(to)));
+        const canvas = fCanvas.current;
+        if (!canvas || !from || !to || from.whole || to.whole || from.prefix !== to.prefix || from.tail !== to.tail || from.math !== to.math) { fallback(); return; }
+        const a = from.strs, b = to.strs, m = Math.min(a.length, b.length);
+        let head = 0;
+        while (head < m && a[head] === b[head]) head++;
+        let tail = 0;
+        while (tail < m - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
+        const gone = a.length - head - tail, added = b.slice(head, b.length - tail);
+        const live = canvas.getObjects().filter((o) => !o.excludeFromExport);
+        if (live.length !== a.length || gone > 400 || added.length > 400) { fallback(); return; }
+        const finish = () => {
+            sb.current.lastState = { math: JSON.parse(to.math), entry: to };
+            canvas.requestRenderAll();
+            scheduleInkRefresh();
+            queueAutosave();
+            sb.current.isLocked = false;
+        };
+        let at;
+        try {
+            canvas.discardActiveObject();
+            const victims = live.slice(head, head + gone);
+            const all = canvas.getObjects();
+            at = victims.length ? all.indexOf(victims[0]) : (head < live.length ? all.indexOf(live[head]) : all.length);
+            victims.forEach((o) => canvas.remove(o));
+        } catch (err) { console.error('undo diff failed', err); fallback(); return; }
+        if (!added.length) { finish(); return; }
+        let parsed;
+        try { parsed = JSON.parse('[' + added.join(',') + ']'); } catch { fallback(); return; }
+        Promise.resolve(fabric.util.enlivenObjects(parsed)).then((objs) => {
+            canvas.insertAt(Math.max(0, at), ...objs);
+            finish();
+        }).catch((err) => { console.error('undo diff failed', err); fallback(); });
     };
 
     const redo = () => {
         flushHistory();
         if (sb.current.redoStack.length === 0 || sb.current.isLocked) return;
         exitNodeEditMode(); sb.current.isLocked = true; const entry = sb.current.redoStack.pop();
+        const before = sb.current.historyStack[sb.current.historyStack.length - 1];
         sb.current.historyStack.push(entry);
         sb.current.historyBytes = (sb.current.historyBytes || 0) + entry.cost;
-        restore(JSON.parse(entryJson(entry)));
+        applyEntry(before, entry);
     };
     useEffect(() => { gestureActions.current = { undo, redo }; });
 

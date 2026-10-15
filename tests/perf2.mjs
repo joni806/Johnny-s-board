@@ -17,6 +17,8 @@ await pg.evaluate(async(N)=>{ // ממלא את הלוח בכתב אמיתי דר
   await sleep(2500);
 },N);
 console.log('objects',await pg.evaluate(()=>window.__pbCanvas.getObjects().length));
+if(process.env.RELOAD){ await pg.waitForTimeout(2500); await pg.reload({waitUntil:'networkidle'}); await pg.locator('.project-card').first().click(); await pg.waitForSelector('#drawing-canvas'); await pg.waitForTimeout(1500);
+  console.log('after reload objects',await pg.evaluate(()=>window.__pbCanvas.getObjects().length),'cached:',await pg.evaluate(()=>window.__pbCanvas.getObjects().filter(o=>o.objectCaching).length)); }
 if(SLOW>1) await cdp.send('Emulation.setCPUThrottlingRate',{rate:SLOW});
 if(PROF){await cdp.send('Profiler.enable'); await cdp.send('Profiler.setSamplingInterval',{interval:300}); await cdp.send('Profiler.start');}
 const res=await pg.evaluate(async()=>{
@@ -42,6 +44,8 @@ const res=await pg.evaluate(async()=>{
   window.__pbSetMode('draw');
   // זום והזזה
   tm=performance.now(); for(let k=0;k<20;k++) cv.parentElement.parentElement.dispatchEvent(new WheelEvent('wheel',{ctrlKey:true,deltaY:-30,clientX:600,clientY:400,bubbles:true,cancelable:true})); await sleep(400); out['zoom end render+settle']=+(performance.now()-tm).toFixed(1);
+  const c=window.__pbCanvas; const zs=[]; for(const z of [0.5,1.3,0.8,2.2,0.35]){ c.setViewportTransform([z,0,0,z,10,10]); const t=performance.now(); c.renderAll(); zs.push(+(performance.now()-t).toFixed(0)); }
+  out['render after each zoom change']=zs.join(',');
   tm=performance.now(); window.__pbCanvas.renderAll(); out['renderAll']=+(performance.now()-tm).toFixed(1);
   return out;});
 console.log(res);
