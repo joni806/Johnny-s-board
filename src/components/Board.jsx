@@ -1,10 +1,10 @@
-import { useRef, useEffect, useState, useImperativeHandle, forwardRef } from 'react';
+import { useRef, useEffect, useLayoutEffect, useState, useImperativeHandle, forwardRef } from 'react';
 import * as fabricPkg from 'fabric';
 import 'mathlive';
 import katex from 'katex';
 import {
     createGridGroup, createShape, buildRecognizedShape, isObjectNearPoint, EXTRA_PROPS, typeOf,
-    eraseObjectPartially, buildStamp, buildPlotGroup, SHAPE_FILL, getEraseGeometry,
+    eraseObjectPartially, serializeCanvas, buildStamp, buildPlotGroup, SHAPE_FILL, getEraseGeometry,
 } from '../utils/canvasUtils';
 import { recognizeShape, buildInkPath, fitLine, simplifyRDP } from '../utils/recognition';
 import { createInkStroke, samplePointer, paintInkStep } from '../utils/ink';
@@ -25,6 +25,12 @@ import { createLaser } from '../utils/laser';
 import { createRecorder, isRecordingSupported } from '../utils/recorder';
 import { isConnected as driveIsConnected, onDriveChange, uploadRecording, downloadFile, deleteFile } from '../utils/drive';
 import RecorderBar from './RecorderBar';
+import LayoutPanel from './LayoutPanel';
+import PageNav from './PageNav';
+import {
+    normalizeLayout, isPaged, layoutPages, pageCountFor, pagesBounds, mergeBounds, constrainView, fitZoom,
+    viewForPage, currentPageIndex, zoomRangeFor, deskColorFor, pointOnPage,
+} from '../utils/pages';
 import { solveExpression, runCasAction, terminateMathWorker } from '../utils/mathEngine';
 
 const fabric = fabricPkg.fabric || fabricPkg;
@@ -206,6 +212,16 @@ const Board = forwardRef(({
     const [autoSnap, setAutoSnap] = useState(initialData?.autoSnap !== false);
     const [pressureInk, setPressureInk] = useState(initialData?.pressureInk !== false);
     const [showBoardSettings, setShowBoardSettings] = useState(false);
+    // פריסת הלוח: אינסופי או דפים. נשמרת עם הלוח
+    const [layout, setLayoutState] = useState(() => normalizeLayout(initialData?.layout));
+    const layoutRef = useRef(layout);
+    const [pageCount, setPageCount] = useState(layout.pages);
+    const pageCountRef = useRef(layout.pages);
+    const [curPage, setCurPage] = useState(0);
+    const curPageRef = useRef(0);
+    const [showLayoutPanel, setShowLayoutPanel] = useState(false);
+    const pagesLayerRef = useRef(null);
+    const inkBoundsRef = useRef(null);
     // רשימת גרסאות קודמות. null כשהחלונית סגורה
     const [revisions, setRevisions] = useState(null);
     // דולק בזמן שהמנוע הסימבולי עובד בחוט הצדדי
@@ -345,15 +361,110 @@ const sb = useRef({
     };
     /** זום סביב נקודה במסך */
     const viewZoomTo = (px, py, zoom) => {
+        cancelAnimationFrame(sb.current.viewAnim);
         const g = viewGesture();
         const z = g.cur[0], k = zoom / z;
-        g.cur = [zoom, 0, 0, zoom, px - (px - g.cur[4]) * k, py - (py - g.cur[5]) * k];
+        g.cur = constrainCam([zoom, 0, 0, zoom, px - (px - g.cur[4]) * k, py - (py - g.cur[5]) * k]);
         scheduleView();
     };
     const viewPanBy = (dx, dy) => {
+        cancelAnimationFrame(sb.current.viewAnim);
         const g = viewGesture();
-        g.cur = [g.cur[0], 0, 0, g.cur[3], g.cur[4] + dx, g.cur[5] + dy];
+        g.cur = constrainCam([g.cur[0], 0, 0, g.cur[3], g.cur[4] + dx, g.cur[5] + dy]);
         scheduleView();
+    };
+
+    /* ── דפים ────────────────────────────────────────────────────────
+       בלוח עם דפים המצלמה מוגבלת לדפים עצמם, והדפים הם שכבת רקע מעל צבע
+       השולחן. הכתב נשאר אותו כתב על אותו קנבס. */
+    const viewSize = () => {
+        const el = viewportRef.current;
+        return { vw: el?.clientWidth || window.innerWidth, vh: el?.clientHeight || window.innerHeight };
+    };
+    const currentPages = () => layoutPages(layoutRef.current, pageCountRef.current);
+    const constrainCam = (v) => {
+        const lay = layoutRef.current;
+        if (!isPaged(lay)) return v;
+        const { vw, vh } = viewSize();
+        const pages = currentPages();
+        let bounds;
+        if (lay.mode === 'single') {
+            const pg = pages[Math.min(curPageRef.current, pages.length - 1)];
+            bounds = { left: pg.x, top: pg.y, right: pg.x + pg.w, bottom: pg.y + pg.h };
+        } else bounds = mergeBounds(pagesBounds(pages), inkBoundsRef.current);
+        return constrainView(v, bounds, vw, vh, zoomRangeFor(lay, vw, vh));
+    };
+    /** מעביר את המצלמה בתנועה חלקה, דרך אותו מנגנון CSS של מחוות הזום */
+    const animateViewTo = (target) => {
+        cancelAnimationFrame(sb.current.viewAnim);
+        const from = viewGesture().cur.slice();
+        let t0 = null;
+        const step = (now) => {
+            if (t0 === null) t0 = now;
+            const t = Math.min(1, (now - t0) / 220), e = 1 - Math.pow(1 - t, 3);
+            viewGesture().cur = from.map((v, i) => v + (target[i] - v) * e);
+            scheduleView();
+            if (t < 1) sb.current.viewAnim = requestAnimationFrame(step);
+        };
+        sb.current.viewAnim = requestAnimationFrame(step);
+    };
+    const goToPage = (i, fit = false) => {
+        const lay = layoutRef.current;
+        if (!isPaged(lay) || !fCanvas.current) return;
+        const pages = currentPages();
+        const idx = Math.max(0, Math.min(pages.length - 1, i));
+        const { vw, vh } = viewSize();
+        curPageRef.current = idx; setCurPage(idx);
+        const zoom = fit || lay.mode === 'single' ? fitZoom(lay, vw, vh) : liveZoom();
+        animateViewTo(constrainCam(viewForPage(pages[idx], zoom, vw, vh, lay.mode === 'vertical')));
+    };
+    /** הצגה מותאמת של הדף הנוכחי, או איפוס ל־100% בלוח אינסופי */
+    const refitView = () => {
+        const canvas = fCanvas.current;
+        if (!canvas) return;
+        if (sb.current.viewG) endViewGesture();
+        const lay = layoutRef.current;
+        if (!isPaged(lay)) { canvas.setViewportTransform([1, 0, 0, 1, 0, 0]); syncCustomLayers(); return; }
+        const { vw, vh } = viewSize();
+        const pages = currentPages();
+        const idx = Math.min(curPageRef.current, pages.length - 1);
+        curPageRef.current = idx; setCurPage(idx);
+        canvas.setViewportTransform(constrainCam(viewForPage(pages[idx], fitZoom(lay, vw, vh), vw, vh, lay.mode === 'vertical')));
+        syncCustomLayers();
+    };
+    /** כמה דפים צריכים להיות, לפי גבולות הכתב. נקרא רק כשיש דפים */
+    const refreshPages = () => {
+        const lay = layoutRef.current;
+        let b = null;
+        if (isPaged(lay) && fCanvas.current) {
+            for (const o of fCanvas.current.getObjects()) {
+                if (o.isEditHelper) continue;
+                const r = o.getBoundingRect();
+                b = mergeBounds(b, { left: r.left, top: r.top, right: r.left + r.width, bottom: r.top + r.height });
+            }
+        }
+        inkBoundsRef.current = b;
+        const n = isPaged(lay) ? pageCountFor(lay, b) : lay.pages;
+        if (n !== pageCountRef.current) { pageCountRef.current = n; setPageCount(n); }
+    };
+    const scheduleInkRefresh = () => {
+        if (!isPaged(layoutRef.current)) return;
+        clearTimeout(sb.current.pagesTimer);
+        sb.current.pagesTimer = setTimeout(refreshPages, 350);
+    };
+    const changeLayout = (raw, { refit = true } = {}) => {
+        const next = normalizeLayout(raw);
+        layoutRef.current = next;
+        setLayoutState(next);
+        refreshPages();
+        if (refit) refitView();
+        clearTimeout(sb.current.layoutSaveTimer);
+        sb.current.layoutSaveTimer = setTimeout(() => { if (onAutoSave) onAutoSave({ layout: layoutRef.current }); }, 500);
+    };
+    const addPage = () => {
+        const n = pageCountRef.current + 1;
+        changeLayout({ ...layoutRef.current, pages: n }, { refit: false });
+        goToPage(n - 1);
     };
     /** מחיל את המחווה על Fabric ומצייר פעם אחת, באותו פריים שבו הטרנספורם מתאפס */
     const endViewGesture = () => {
@@ -380,6 +491,7 @@ const sb = useRef({
             mathLayerRef.current.style.transform = transform;
             mathLayerRef.current.style.transformOrigin = '0 0';
         }
+        if (pagesLayerRef.current) pagesLayerRef.current.style.transform = transform;
         if (patternBgRef.current) {
             const el = patternBgRef.current;
             const key = `${boardPatternTypeRef.current}|${boardColorRef.current}|${zoom}`;
@@ -405,6 +517,13 @@ const syncCustomLayers = () => {
         if (mathLayerRef.current) {
             mathLayerRef.current.style.transform = transform;
             mathLayerRef.current.style.transformOrigin = '0 0';
+        }
+        if (pagesLayerRef.current) pagesLayerRef.current.style.transform = transform;
+        const lay = layoutRef.current;
+        if (isPaged(lay) && lay.mode !== 'single') {
+            const { vw, vh } = viewSize();
+            const idx = currentPageIndex(currentPages(), vpt, vw, vh, lay);
+            if (idx !== curPageRef.current) { curPageRef.current = idx; setCurPage(idx); }
         }
 
         // שכבת הרקע מסתנכרנת עם הזום והתזוזה. לכל שכבה בתוך הרקע — למשל
@@ -434,6 +553,16 @@ const syncCustomLayers = () => {
         syncCustomLayers();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [boardPatternType, boardColor, gridSize]);
+
+    // שכבת הדפים נבנית מחדש כשהפריסה משתנה, והטרנספורם שלה חייב לחזור מיד
+    useLayoutEffect(() => { syncCustomLayers(); }, [layout, pageCount]);
+    // לוח שנפתח עם דפים: מתאימים את התצוגה ומחשבים כמה דפים צריך
+    useEffect(() => {
+        const t = setTimeout(() => { refreshPages(); if (isPaged(layoutRef.current)) refitView(); }, 120);
+        return () => clearTimeout(t);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+    useEffect(() => { window.__pbSetLayout = (l) => changeLayout({ ...layoutRef.current, ...l }); });
 
  useEffect(() => {
         // פונקציית עזר להגדרת קנבס חד התומך במסכי רטינה (אייפד/מובייל)
@@ -1772,9 +1901,10 @@ const handleViewportPointerUp = (e) => {
             opacity: sb.current.editOpacity ?? 1, selectable: true, evented: true, hasControls: true, hasBorders: true,
             lockRotation: false, lockScalingX: false, lockScalingY: false,
         });
-        const state = { fabric: fCanvas.current.toObject(EXTRA_PROPS), math: mathData };
-        if (edited && editLook) edited.set(editLook);
-        return state;
+        let ser;
+        try { ser = serializeCanvas(fCanvas.current, EXTRA_PROPS, edited); }
+        finally { if (edited && editLook) edited.set(editLook); }
+        return { fabric: ser.fabric, math: mathData, fabricJson: ser.fabricJson };
     };
 
     const flushHistory = () => {
@@ -1787,7 +1917,9 @@ const handleViewportPointerUp = (e) => {
         sb.current.pendingSave = false;
         const state = captureState();
         if (!state) return;
-        const json = JSON.stringify(state);
+        // הלוח כבר הוא מחרוזת JSON, ולכן לא מסריאלים אותו שוב
+        const json = '{"fabric":' + state.fabricJson + ',"math":' + JSON.stringify(state.math) + '}';
+        delete state.fabricJson;
         sb.current.lastState = state;
         if (sb.current.historyStack[sb.current.historyStack.length - 1] === json) return;
         sb.current.historyStack.push(json);
@@ -1817,6 +1949,7 @@ const handleViewportPointerUp = (e) => {
      * המקלדת, ושם הערכים מהרינדור הראשון היו דורסים צבע לוח שהשתנה מאז.
      */
     const boardMeta = () => ({
+        layout: layoutRef.current,
         bg: boardColorRef.current, pattern: boardPatternTypeRef.current,
         autoSnap: autoSnapRef.current, pressureInk: pressureInkRef.current, snapLevel: snapLevelRef.current,
     });
@@ -1824,10 +1957,13 @@ const handleViewportPointerUp = (e) => {
     const saveState = () => {
         if (!fCanvas.current || sb.current.isLocked || !mathLayerRef.current) return;
         sb.current.redoStack = [];
+        scheduleInkRefresh();
         scheduleHistory();
         if (onAutoSave) {
             if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
-            autosaveTimerRef.current = setTimeout(() => {
+            const runAutosave = () => {
+                // לא כותבים לדיסק באמצע משיכה: הכתיבה חוסמת את המסך רגע
+                if (sb.current.drawing) { autosaveTimerRef.current = setTimeout(runAutosave, 700); return; }
                 flushHistory();
                 const state = sb.current.lastState;
                 if (!state) return;
@@ -1838,7 +1974,8 @@ const handleViewportPointerUp = (e) => {
                             : 'השמירה האוטומטית נכשלה, והגרסה הקודמת נשמרה.', 'error');
                     }
                 });
-            }, 1500); // מחכה 1.5 שניות של חוסר פעילות לפני כתיבה למסד הנתונים
+            };
+            autosaveTimerRef.current = setTimeout(runAutosave, 1500); // מחכה 1.5 שניות של חוסר פעילות לפני כתיבה למסד הנתונים
         }
     };
 
@@ -2181,6 +2318,7 @@ const restore = (state) => {
             );
         });
         sb.current.isLocked = false; // ← משחרר את הנעילה!
+        scheduleInkRefresh();
     };
 
     // תמיכה בשתי גרסאות של Fabric:
@@ -2261,6 +2399,7 @@ const restore = (state) => {
             showToast(next ? 'מחיקה בקישקוש: פעילה' : 'מחיקה בקישקוש: כבויה');
             return next;
         },
+        openLayoutPanel: () => { setShowBoardSettings(false); setShowLayoutPanel(true); },
         openBoardSettings: () => {
             setBoardSettingsPos({ x: window.innerWidth / 2, y: 60 });
             setShowBoardSettings(true);
@@ -2897,6 +3036,8 @@ const restore = (state) => {
             return;
         }
         if (modeRef.current !== 'draw' && modeRef.current !== 'erase') return;
+        // בלוח עם דפים כותבים רק על הדף, לא על השולחן שמסביב
+        if (isPaged(layoutRef.current) && !pointOnPage(currentPages(), virtualX, virtualY)) return;
 
         sb.current.drawing = true;
         sb.current.drawPointerId = e.pointerId;
@@ -2979,13 +3120,6 @@ const restore = (state) => {
         if (sb.current.liveObj) {
             // Shift במחשב עושה מה שאצבע שנייה עושה בטאבלט — צורה מושלמת
             if (e.shiftKey && !sb.current.shiftPerfect) { sb.current.shiftPerfect = true; makeLivePerfect(); }
-            // החזקה קצרה של העט במקום, כשהצורה כבר חיה, הופכת אותה למושלמת
-            const lp = sb.current.perfectHold;
-            if (!lp || Math.hypot(coords.x - lp.x, coords.y - lp.y) * zoom > 3) {
-                clearTimeout(sb.current.perfectTimer);
-                sb.current.perfectHold = { x: coords.x, y: coords.y };
-                sb.current.perfectTimer = setTimeout(() => { if (sb.current.liveObj) makeLivePerfect(); }, 280);
-            }
             fCanvas.current.remove(sb.current.liveObj);
             const next = sb.current.liveRebuild ? sb.current.liveRebuild(coords) : null;
             if (next) {
@@ -3052,8 +3186,6 @@ const restore = (state) => {
 
         if (sb.current.isPanning) { setInking(false); return; }
         const p = penRef.current;
-        clearTimeout(sb.current.perfectTimer);
-        sb.current.perfectHold = null;
         if (sb.current.liveObj) {
             const obj = sb.current.liveObj;
             sb.current.liveObj = null;
@@ -3218,11 +3350,6 @@ const restore = (state) => {
             sb.current.liveVariantIndex = result.variantIndex;
             sb.current.pendingRawInk = rawInk;
             sb.current.liveRebuild = makeLiveRebuild(result, sb.current.points[sb.current.points.length - 1]);
-            // העט עדיין במקום: אם יישאר עוד רגע קצר, הצורה תהפוך למושלמת
-            const lastPt = sb.current.points[sb.current.points.length - 1];
-            sb.current.perfectHold = { x: lastPt.x, y: lastPt.y };
-            clearTimeout(sb.current.perfectTimer);
-            sb.current.perfectTimer = setTimeout(() => { if (sb.current.liveObj) makeLivePerfect(); }, 280);
             fCanvas.current.add(obj);
         } else {
             // קודם מצב היסטוריה עם הדיו הגולמי, ורק אחריו הצורה המיושרת —
@@ -3317,10 +3444,29 @@ const restore = (state) => {
         return true;
     };
 
+    /**
+     * מוסיף אובייקט שנמצא בראש הערימה ומצייר רק אותו על גבי מה שכבר מצויר.
+     * ציור מחדש של כל הלוח אחרי כל משיכה לוקח זמן שגדל עם כמות הכתב; משיכה
+     * חדשה שנוחתת מעל הכול לא משנה שום פיקסל קיים, ולכן אין בו צורך.
+     */
+    const addOnTop = (obj) => {
+        const canvas = fCanvas.current;
+        canvas.add(obj);
+        const settled = !canvas.nextRenderHandle && !sb.current.viewG && !canvas.getActiveObject()
+            && !canvas.clipPath && !canvas.overlayImage && !canvas.overlayColor;
+        if (!settled) { canvas.requestRenderAll(); return; }
+        const ctx = canvas.getContext();
+        const v = canvas.viewportTransform;
+        ctx.save();
+        ctx.transform(v[0], v[1], v[2], v[3], v[4], v[5]);
+        obj.render(ctx);
+        ctx.restore();
+    };
+
     const convertToScribble = () => {
         const pathObj = buildInkPathObject();
         if (!pathObj) { sb.current.points = []; sb.current.inkStroke = null; return null; }
-        fCanvas.current.add(pathObj); fCanvas.current.requestRenderAll(); saveState();
+        addOnTop(pathObj); saveState();
         sb.current.points = []; sb.current.inkStroke = null;
         return pathObj;
     };
@@ -3830,6 +3976,9 @@ const restore = (state) => {
     };
 
     const patternColorRGB = getPatternContrastColor(boardColor);
+    const paged = isPaged(layout);
+    const pageRects = paged ? layoutPages(layout, pageCount) : [];
+    const pageStyle = patternStyle(boardPatternType, patternColorRGB, 1);
     // פרטי היעד של תפריט ההקשר, מחושבים פעם אחת לרינדור
     const cmTarget = contextMenu.visible ? contextMenu.target : null;
     const cmType = cmTarget ? typeOf(cmTarget) : '';
@@ -4115,17 +4264,32 @@ const restore = (state) => {
             <div style={{ height: '1px', background: 'rgba(255,255,255,0.07)', margin: '4px 0 14px' }} />
 
             {/* פעולות */}
+            <button onClick={() => { setShowBoardSettings(false); setRevisions(null); setShowLayoutPanel(true); }} style={{
+                width: '100%', padding: '9px', borderRadius: '10px', border: 'none',
+                background: 'rgba(74,222,128,0.12)', color: '#4ade80',
+                cursor: 'pointer', fontSize: '13px', marginBottom: '6px', textAlign: 'center',
+            }}>📄 פריסת לוח ודפים</button>
             <button onClick={() => {
-                if (fCanvas.current) { fCanvas.current.setViewportTransform([1,0,0,1,0,0]); syncCustomLayers(); }
+                refitView();
                 setShowBoardSettings(false); setRevisions(null);
             }} style={{
                 width: '100%', padding: '9px', borderRadius: '10px', border: 'none',
                 background: 'rgba(255,255,255,0.06)', color: '#a1a1aa',
                 cursor: 'pointer', fontSize: '13px', marginBottom: '6px', textAlign: 'center',
-            }}>🔍 אפס זום ל-100%</button>
+            }}>{isPaged(layout) ? '🔍 התאם דף למסך' : '🔍 אפס זום ל-100%'}</button>
         </div>
     </>
 )}
+
+{paged && (
+                <PageNav layout={layout} page={Math.min(curPage, pageCount - 1)} count={pageCount}
+                    onGo={(i) => goToPage(i)} onAdd={addPage} onFit={() => goToPage(curPageRef.current, true)}
+                    onSettings={() => setShowLayoutPanel(true)} />
+            )}
+            {showLayoutPanel && (
+                <LayoutPanel layout={layout} pageCount={pageCount} onChange={(l) => changeLayout(l)}
+                    onClose={() => setShowLayoutPanel(false)} />
+            )}
 
 {toast && (
                 <div data-ui dir="rtl" style={{
@@ -4292,16 +4456,37 @@ const restore = (state) => {
             {/* הקונטיינר עכשיו תופס את גודל המסך בדיוק */}
             <div id="board-container" style={{
     position: 'relative', width: '100%', height: '100%',
-    background: `radial-gradient(circle at 30% 30%, color-mix(in srgb, ${boardColor}, white 18%) 0%, ${boardColor} 100%)`,
+    background: paged ? deskColorFor(boardColor) : `radial-gradient(circle at 30% 30%, color-mix(in srgb, ${boardColor}, white 18%) 0%, ${boardColor} 100%)`,
     transition: '0.5s background'
 }}>
 
     {/* שכבת הרקע. הגודל והמיקום מתעדכנים עם המצלמה ב־syncCustomLayers */}
     <div ref={patternBgRef} style={{
-        position: 'absolute', inset: 0, zIndex: 0, pointerEvents: 'none',
+        position: 'absolute', inset: 0, zIndex: 0, pointerEvents: 'none', display: paged ? 'none' : 'block',
         backgroundImage: patternStyle(boardPatternType, patternColorRGB, 1).image,
         backgroundSize: patternStyle(boardPatternType, patternColorRGB, 1).size,
     }} />
+    {/* בלוח עם דפים: כל דף הוא גיליון עם הצבע והרקע של הלוח, על שולחן בצבע אחר */}
+    {paged && (
+        <div ref={pagesLayerRef} aria-hidden="true" style={{
+            position: 'absolute', top: 0, left: 0, width: 0, height: 0, transformOrigin: '0 0', zIndex: 0, pointerEvents: 'none',
+        }}>
+            {pageRects.map((pg) => (
+                <div key={pg.index} data-page={pg.index} style={{
+                    position: 'absolute', left: pg.x, top: pg.y, width: pg.w, height: pg.h, borderRadius: 2,
+                    backgroundColor: boardColor, backgroundImage: pageStyle.image, backgroundSize: pageStyle.size,
+                    boxShadow: '0 3px 18px rgba(0,0,0,0.45), 0 0 0 1px rgba(128,128,128,0.4)',
+                }}>
+                    {layout.numbers && (
+                        <span style={{
+                            position: 'absolute', bottom: 8, left: 0, right: 0, textAlign: 'center', userSelect: 'none',
+                            fontSize: Math.max(13, pg.w * 0.022), color: `rgba(${patternColorRGB}, 0.4)`, fontFamily: 'Assistant, Arial, sans-serif',
+                        }}>{pg.index + 1}</span>
+                    )}
+                </div>
+            ))}
+        </div>
+    )}
                 <div ref={fabricWrapRef} style={{ position: 'absolute', top: 0, left: 0, zIndex: 1, width: '100%', height: '100%' }}>
                     <canvas id="fabric-canvas" ref={fabricCanvasElRef} />
                 </div>

@@ -7,8 +7,9 @@ import DrivePanel from './components/DrivePanel';
 import { backupProject, isConnected as driveConnected } from './utils/drive';
 import { loadPenState, savePenState, buildPens, inkColorOn } from './utils/pens';
 import {
-  PROJECT_PREFIX, listProjects, loadProject, saveProject,
+  PROJECT_PREFIX, FOLDER_PREFIX, listProjects, loadProject, saveProject,
   deleteProject as removeProject, flushWrites,
+  listFolders, saveFolder, moveFolder, deleteFolder, setProjectFolder, descendantFolderIds,
 } from './utils/storage';
 import './App.css'; // מייבא את העיצוב החדש והנקי
 
@@ -60,6 +61,11 @@ function App() {
   const currentProjectRef = useRef(null);
 
   const [projects, setProjects] = useState([]);
+  // תיקיות: folderId הוא התיקייה הפתוחה (null = הראשית)
+  const [folders, setFolders] = useState([]);
+  const [openFolderId, setFolderId] = useState(null);
+  const [folderModal, setFolderModal] = useState(null);   // { id|null, name }
+  const [moveModal, setMoveModal] = useState(null);       // { kind: 'project'|'folder', id }
   const [currentProject, setCurrentProject] = useState(null);
   const [showNewModal, setShowNewModal] = useState(false);
   
@@ -74,13 +80,17 @@ function App() {
   }, []);
 
   const loadProjectsList = useCallback(async () => {
-    setProjects(await listProjects());
+    const [list, fl] = await Promise.all([listProjects(), listFolders()]);
+    setProjects(list);
+    setFolders(fl);
   }, []);
 
   useEffect(() => {
     // הדגל מונע עדכון מצב אחרי שהרכיב כבר ירד מהמסך
     let cancelled = false;
-    listProjects().then((list) => { if (!cancelled) setProjects(list); });
+    Promise.all([listProjects(), listFolders()]).then(([list, fl]) => {
+      if (!cancelled) { setProjects(list); setFolders(fl); }
+    });
     return () => { cancelled = true; };
   }, []);
 
@@ -89,7 +99,7 @@ function App() {
     const newId = `${PROJECT_PREFIX}${uuidv4()}`;
     const newProjectData = stamped({
       id: newId, title: newTitle, bg: newColor, pattern: newPattern,
-      fabric: null, math: [], autoSnap: true,
+      fabric: null, math: [], autoSnap: true, folderId,
     });
     await saveProject(newId, newProjectData);
     setShowNewModal(false);
@@ -111,6 +121,62 @@ function App() {
       await removeProject(id);
       loadProjectsList();
     }
+  };
+
+  // ── תיקיות ──
+  // תיקייה שנמחקה מתחת לרגלינו מחזירה לראשית
+  const folderId = folders.some((f) => f.id === openFolderId) ? openFolderId : null;
+  const folderPath = (() => {
+    const path = [];
+    for (let id = folderId, guard = 0; id && guard < 50; guard++) {
+      const f = folders.find((x) => x.id === id);
+      if (!f) break;
+      path.unshift(f);
+      id = f.parentId;
+    }
+    return path;
+  })();
+  const subFolders = folders.filter((f) => (f.parentId || null) === folderId);
+  const shownProjects = projects.filter((p) => (p.folderId || null) === folderId);
+  /** כמה פריטים יש בתיקייה, כולל בתתי־התיקיות שלה */
+  const countIn = (id) => {
+    const ids = descendantFolderIds(folders, id); ids.add(id);
+    return projects.filter((p) => ids.has(p.folderId)).length;
+  };
+
+  const submitFolder = async () => {
+    const name = folderModal?.name.trim();
+    if (!name) return;
+    if (folderModal.id) {
+      const f = folders.find((x) => x.id === folderModal.id);
+      if (f) await saveFolder({ ...f, title: name });
+    } else {
+      await saveFolder({ id: `${FOLDER_PREFIX}${uuidv4()}`, title: name, parentId: folderId });
+    }
+    setFolderModal(null);
+    loadProjectsList();
+  };
+  const removeFolder = async (f, e) => {
+    e.stopPropagation();
+    if (!window.confirm(`למחוק את התיקייה ״${f.title}״? הלוחות והתיקיות שבתוכה לא יימחקו, והם יעברו למעלה.`)) return;
+    await deleteFolder(folders, projects, f.id);
+    loadProjectsList();
+  };
+  const doMove = async (target) => {
+    const m = moveModal;
+    setMoveModal(null);
+    if (!m) return;
+    if (m.kind === 'project') await setProjectFolder(m.id, target);
+    else await moveFolder(folders, m.id, target);
+    loadProjectsList();
+  };
+  /** גרירת כרטיס על תיקייה (בעכבר). במגע משתמשים בכפתור ״העבר״ */
+  const dropOn = (e, target) => {
+    e.preventDefault(); e.stopPropagation();
+    const raw = e.dataTransfer.getData('text/pb-item');
+    if (!raw) return;
+    const [kind, id] = raw.split('|');
+    (kind === 'project' ? setProjectFolder(id, target) : moveFolder(folders, id, target)).then(loadProjectsList);
   };
 
   /** גיבוי הלוח הפתוח לדרייב. מחזיר { ok } לחלונית שהפעילה אותו */
@@ -248,6 +314,12 @@ function App() {
      <header className="dashboard-header">
         <h1 className="dashboard-title">הלוחות שלי</h1>
         <div style={{ display: 'flex', alignItems: 'center' }}>
+        <button className="btn-header-action" title="תיקייה חדשה" aria-label="תיקייה חדשה" onClick={() => setFolderModal({ id: null, name: '' })}>
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+            <path d="M12 11v5M9.5 13.5h5" />
+          </svg>
+        </button>
         <button className="btn-header-action" title="גוגל דרייב" onClick={() => setShowDrive(true)}>
           <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M17.5 19a4.5 4.5 0 0 0 .5-8.97A6 6 0 0 0 6.3 9.2 4.5 4.5 0 0 0 6.5 19z" />
@@ -263,9 +335,48 @@ function App() {
         </div>
       </header>
 
+      {(folderId || folders.length > 0) && (
+        <nav className="crumbs" aria-label="נתיב התיקייה">
+          <button className={`crumb ${folderId ? '' : 'on'}`} onClick={() => setFolderId(null)}
+            onDragOver={(e) => e.preventDefault()} onDrop={(e) => dropOn(e, null)}>הראשית</button>
+          {folderPath.map((f, i) => (
+            <span key={f.id} className="crumb-wrap">
+              <span className="crumb-sep">›</span>
+              <button className={`crumb ${i === folderPath.length - 1 ? 'on' : ''}`} onClick={() => setFolderId(f.id)}
+                onDragOver={(e) => e.preventDefault()} onDrop={(e) => dropOn(e, f.id)}>{f.title}</button>
+            </span>
+          ))}
+        </nav>
+      )}
+
       <div className="projects-grid">
-        {projects.map(p => (
-          <div key={p.id} className="project-card" onClick={() => openProject(p.id)}>
+        {subFolders.map((f) => (
+          <div key={f.id} className="project-card folder-card" onClick={() => setFolderId(f.id)}
+            draggable onDragStart={(e) => e.dataTransfer.setData('text/pb-item', `folder|${f.id}`)}
+            onDragOver={(e) => e.preventDefault()} onDrop={(e) => dropOn(e, f.id)}>
+            <div className="folder-art" aria-hidden="true">
+              <svg width="64" height="64" viewBox="0 0 24 24" fill="currentColor" fillOpacity="0.18" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round">
+                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+              </svg>
+            </div>
+            <div className="project-info">
+              <div>
+                <h3 className="project-title">{f.title}</h3>
+                <p className="project-date">{countIn(f.id)} לוחות</p>
+              </div>
+              <div className="card-actions">
+                <button className="btn-delete" title="שנה שם" onClick={(e) => { e.stopPropagation(); setFolderModal({ id: f.id, name: f.title }); }}>✎</button>
+                <button className="btn-delete" title="העבר לתיקייה אחרת" onClick={(e) => { e.stopPropagation(); setMoveModal({ kind: 'folder', id: f.id }); }}>⇄</button>
+                <button className="btn-delete" title="מחק תיקייה" onClick={(e) => removeFolder(f, e)}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        ))}
+        {shownProjects.map(p => (
+          <div key={p.id} className="project-card" onClick={() => openProject(p.id)}
+            draggable onDragStart={(e) => e.dataTransfer.setData('text/pb-item', `project|${p.id}`)}>
             <div className="project-bg-preview" style={{ 
                 backgroundColor: p.previewColor, 
                 backgroundImage: p.pattern === 'grid' ? 'linear-gradient(rgba(255,255,255,0.2) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.2) 1px, transparent 1px)' : p.pattern === 'lines' ? 'linear-gradient(rgba(255,255,255,0.2) 1px, transparent 1px)' : p.pattern === 'dots' ? 'radial-gradient(circle, rgba(255,255,255,0.5) 1.5px, transparent 1.5px)' : 'none', 
@@ -278,19 +389,70 @@ function App() {
                   {new Date(p.lastModified).toLocaleDateString('he-IL')} • {new Date(p.lastModified).toLocaleTimeString('he-IL', {hour: '2-digit', minute:'2-digit'})}
                 </p>
               </div>
+              <div className="card-actions">
+              <button className="btn-delete" title="העבר לתיקייה" onClick={(e) => { e.stopPropagation(); setMoveModal({ kind: 'project', id: p.id }); }}>⇄</button>
               <button className="btn-delete" title="מחק פרויקט" onClick={(e) => deleteProject(p.id, e)}>
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
               </button>
+              </div>
             </div>
           </div>
         ))}
       </div>
 
-      {projects.length === 0 && (
+      {shownProjects.length === 0 && subFolders.length === 0 && (
         <div style={{ textAlign: 'center', color: '#71717a', marginTop: '6rem', fontSize: '1.2rem', fontWeight: '500' }}>
-          עדיין אין לך לוחות. לחץ על הכפתור הירוק כדי להתחיל!
+          {folderId ? 'התיקייה ריקה. לחץ על הכפתור הירוק כדי ליצור כאן לוח, או העבר אליה לוחות.' : 'עדיין אין לך לוחות. לחץ על הכפתור הירוק כדי להתחיל!'}
         </div>
       )}
+
+      {folderModal && (
+        <div className="modal-overlay" onClick={() => setFolderModal(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <h2 className="modal-title">{folderModal.id ? 'שינוי שם תיקייה' : 'תיקייה חדשה'}</h2>
+            <div className="form-group">
+              <label className="form-label">שם התיקייה</label>
+              <input type="text" className="form-input" value={folderModal.name} autoFocus
+                onChange={(e) => setFolderModal({ ...folderModal, name: e.target.value })}
+                onKeyDown={(e) => { if (e.key === 'Enter') submitFolder(); }} />
+            </div>
+            <div className="modal-actions">
+              <button className="btn-cancel" onClick={() => setFolderModal(null)}>ביטול</button>
+              <button className="btn-create-new" onClick={submitFolder}>{folderModal.id ? 'שמור' : 'צור תיקייה'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {moveModal && (() => {
+        const blocked = moveModal.kind === 'folder' ? descendantFolderIds(folders, moveModal.id) : new Set();
+        if (moveModal.kind === 'folder') blocked.add(moveModal.id);
+        const current = moveModal.kind === 'folder'
+          ? (folders.find((f) => f.id === moveModal.id)?.parentId || null)
+          : (projects.find((p) => p.id === moveModal.id)?.folderId || null);
+        // עץ התיקיות כרשימה מוזחת
+        const rows = [];
+        const walk = (parent, depth) => folders.filter((f) => (f.parentId || null) === parent).forEach((f) => {
+          rows.push({ f, depth }); walk(f.id, depth + 1);
+        });
+        walk(null, 0);
+        return (
+          <div className="modal-overlay" onClick={() => setMoveModal(null)}>
+            <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+              <h2 className="modal-title">העבר אל…</h2>
+              <div className="move-list">
+                <button disabled={current === null} onClick={() => doMove(null)}>הראשית</button>
+                {rows.map(({ f, depth }) => (
+                  <button key={f.id} style={{ paddingInlineStart: 14 + depth * 18 }}
+                    disabled={blocked.has(f.id) || current === f.id} onClick={() => doMove(f.id)}>📁 {f.title}</button>
+                ))}
+                {rows.length === 0 && <div className="move-empty">אין עדיין תיקיות. צור תיקייה בכפתור שבראש המסך.</div>}
+              </div>
+              <div className="modal-actions"><button className="btn-cancel" onClick={() => setMoveModal(null)}>סגור</button></div>
+            </div>
+          </div>
+        );
+      })()}
 
       {showDrive && <DrivePanel onClose={() => setShowDrive(false)} />}
 

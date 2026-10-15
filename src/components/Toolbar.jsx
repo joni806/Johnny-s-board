@@ -499,6 +499,7 @@ export default function Toolbar({
                         <button onClick={() => { act('toggleRecorder'); setPop(null); }}><Icon name="mic" size={16} /> הקלטה מסונכרנת</button>
                         <button onClick={() => { onDrive?.(); setPop(null); }}><Icon name="drive" size={16} /> גוגל דרייב</button>
                         <button onClick={() => { act('toggleScratchErase'); setPop(null); }}><Icon name="erase" size={16} /> מחיקה בקישקוש: הדלק או כבה</button>
+                        <button onClick={() => { act('openLayoutPanel'); setPop(null); }}><Icon name="background" size={16} /> פריסת לוח ודפים</button>
                         <button onClick={() => { act('openBoardSettings'); setPop(null); }}><Icon name="settings" size={16} /> הגדרות הלוח ועט S Pen</button>
                         <button onClick={() => { setShowHelp(true); setPop(null); }}><Icon name="keyboard" size={16} /> מחוות וקיצורים</button>
                     </div>

@@ -15,6 +15,7 @@ import { get, set, del, keys } from 'idb-keyval';
 
 export const PROJECT_PREFIX = 'jb_project_';
 export const REVISION_PREFIX = 'jb_rev_';
+export const FOLDER_PREFIX = 'jb_folder_';
 
 /** כמה גרסאות קודמות נשמרות לכל לוח */
 export const MAX_REVISIONS = 8;
@@ -65,6 +66,11 @@ export const flushWrites = async (id) => {
  * דוחף את הגרסה הנוכחית לטבעת הגיבויים, אם עבר מספיק זמן מהגיבוי האחרון
  * או אם הרשומה החדשה מוחקת תוכן קיים.
  */
+// מצב השמירה האחרונה בזיכרון, לכל לוח. בלעדיו כל שמירה אוטומטית קראה מהדיסק
+// את הרשומה הקודמת ואת כל טבעת הגיבויים (עד שמונה עותקים מלאים של הלוח)
+// רק כדי לגלות שעוד לא הגיע הזמן לגיבוי חדש. בלוח גדול זה חסם את המסך.
+const saveMeta = new Map();
+
 const pushRevision = async (id, previous, incoming) => {
     if (!previous || contentSize(previous) === 0) return;
     const key = revisionKey(id);
@@ -83,13 +89,20 @@ const pushRevision = async (id, previous, incoming) => {
  */
 export const saveProject = (id, data) => enqueue(id, async () => {
     if (!isValidProject(data)) return { ok: false, reason: 'invalid' };
-    let previous;
-    try { previous = await get(id); } catch { previous = null; }
-    try {
-        if (previous) await pushRevision(id, previous, data);
-    } catch { /* כישלון גיבוי לא יעצור את השמירה עצמה */ }
+    const meta = saveMeta.get(id);
+    const incoming = contentSize(data);
+    // כשידוע מה נשמר בפעם הקודמת, קוראים מהדיסק רק אם באמת צריך גיבוי חדש
+    const checkBackup = !meta || Date.now() - meta.checkedAt >= REVISION_INTERVAL_MS || incoming < meta.size * 0.5;
+    let previous = null;
+    if (checkBackup) {
+        try { previous = await get(id); } catch { previous = null; }
+        try {
+            if (previous) await pushRevision(id, previous, data);
+        } catch { /* כישלון גיבוי לא יעצור את השמירה עצמה */ }
+    }
     try {
         await set(id, data);
+        saveMeta.set(id, { size: incoming, checkedAt: checkBackup ? Date.now() : meta.checkedAt });
         return { ok: true, backedUp: !!previous };
     } catch (err) {
         return { ok: false, reason: err?.name === 'QuotaExceededError' ? 'quota' : 'write' };
@@ -121,6 +134,7 @@ export const listProjects = async () => {
             lastModified: data.lastModified || 0,
             previewColor: data.bg || '#1e3d32',
             pattern: data.pattern || 'none',
+            folderId: data.folderId || null,
         });
     }
     out.sort((a, b) => b.lastModified - a.lastModified);
@@ -128,6 +142,7 @@ export const listProjects = async () => {
 };
 
 export const deleteProject = (id) => enqueue(id, async () => {
+    saveMeta.delete(id);
     await del(id);
     await del(revisionKey(id));
     return { ok: true };
@@ -155,6 +170,7 @@ export const restoreRevision = (id, index) => enqueue(id, async () => {
     }
     const restored = { ...entry.data, id, lastModified: Date.now() };
     await set(id, restored);
+    saveMeta.delete(id);
     return { ok: true, data: restored };
 });
 
@@ -166,3 +182,57 @@ export const storageEstimate = async () => {
         return { usage: usage || 0, quota: quota || 0 };
     } catch { return null; }
 };
+
+/* ── תיקיות ──────────────────────────────────────────────────────────
+   תיקייה היא רשומה קטנה משלה { id, title, parentId }, ולוח שייך לתיקייה דרך
+   השדה folderId שבו. כך אין צורך לשכתב לוחות כדי לשנות מבנה, ומחיקת תיקייה
+   אף פעם לא מוחקת לוחות: התוכן שלה עולה לתיקיית האב. */
+
+export const listFolders = async () => {
+    const out = [];
+    for (const key of await keys()) {
+        if (typeof key !== 'string' || !key.startsWith(FOLDER_PREFIX)) continue;
+        const f = await get(key);
+        if (f && typeof f.id === 'string') out.push({ id: f.id, title: f.title || 'תיקייה', parentId: f.parentId || null, lastModified: f.lastModified || 0 });
+    }
+    out.sort((a, b) => a.title.localeCompare(b.title, 'he'));
+    return out;
+};
+
+export const saveFolder = (folder) => enqueue(folder.id, async () => {
+    await set(folder.id, { ...folder, lastModified: Date.now() });
+    return { ok: true };
+});
+
+/** כל התיקיות שמתחת לתיקייה, לצורך מניעת מעגלים בהעברה */
+export const descendantFolderIds = (folders, id) => {
+    const out = new Set();
+    const walk = (parent) => folders.forEach((f) => { if (f.parentId === parent && !out.has(f.id)) { out.add(f.id); walk(f.id); } });
+    walk(id);
+    return out;
+};
+
+export const moveFolder = (folders, id, parentId) => {
+    const f = folders.find((x) => x.id === id);
+    if (!f || id === parentId || (parentId && descendantFolderIds(folders, id).has(parentId))) return Promise.resolve({ ok: false });
+    return saveFolder({ ...f, parentId: parentId || null });
+};
+
+/** מוחק תיקייה. תיקיות ולוחות שבתוכה עוברים לתיקיית האב */
+export const deleteFolder = async (folders, projects, id) => {
+    const f = folders.find((x) => x.id === id);
+    if (!f) return { ok: false };
+    const up = f.parentId || null;
+    for (const c of folders.filter((x) => x.parentId === id)) await saveFolder({ ...c, parentId: up });
+    for (const p of projects.filter((x) => x.folderId === id)) await setProjectFolder(p.id, up);
+    await enqueue(id, async () => { await del(id); });
+    return { ok: true };
+};
+
+/** מעביר לוח לתיקייה בלי לשנות את זמן העריכה שלו */
+export const setProjectFolder = (id, folderId) => enqueue(id, async () => {
+    const data = await get(id);
+    if (!data) return { ok: false };
+    await set(id, { ...data, folderId: folderId || null });
+    return { ok: true };
+});

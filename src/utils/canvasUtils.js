@@ -597,3 +597,55 @@ export const buildPlotGroup = (sampled, spec, color, { width = 520, height = 340
     g.plotSpec = JSON.stringify(spec);
     return g;
 };
+
+/* ── סריאליזציה מצטברת ───────────────────────────────────────────────
+   כל משיכה שמורה להיסטוריה וגם לדיסק. סריאליזציה מלאה של כל הלוח אחרי כל
+   משיכה לוקחת זמן שגדל עם כמות הכתב, ולכן אחרי כמה מאות משיכות הלוח נתקע
+   בכל פעם שהעט נוגע במסך. משיכת דיו כמעט אף פעם לא משתנה אחרי שנוצרה, ולכן
+   התוצאה שלה נשמרת בצד ונבנית מחדש רק כשאחד מהמאפיינים שלה זז. */
+const inkCache = new WeakMap();
+
+const isCacheableInk = (obj) => typeOf(obj) === 'path' && obj.customType === 'ink' && !obj.group;
+
+const inkSignature = (o) => [
+    o.left, o.top, o.scaleX, o.scaleY, o.angle, o.flipX, o.flipY, o.skewX, o.skewY, o.width, o.height,
+    o.opacity, o.fill, o.stroke, o.strokeWidth, o.originX, o.originY, o.penKind, o.recTime, o.recId,
+    o.globalCompositeOperation, o.strokeLineCap, o.strokeLineJoin, o.visible,
+    o.strokeDashArray ? o.strokeDashArray.join(',') : '', o.pathOffset ? o.pathOffset.x + ',' + o.pathOffset.y : '',
+].join('|');
+
+/**
+ * מחזיר את מצב הקנבס כאובייקט (לשמירה בדיסק) וגם כמחרוזת JSON (להיסטוריה).
+ * `skip` הוא אובייקט שמצבו הזמני לא אמור להישמר מהמטמון, למשל צורה בעריכה.
+ */
+export const serializeCanvas = (canvas, extraProps, skip = null) => {
+    const live = canvas.getObjects().filter((o) => !o.excludeFromExport);
+    const patched = [];
+    const strs = new Array(live.length);
+    const fresh = [];
+    live.forEach((o, i) => {
+        if (o === skip || !isCacheableInk(o)) return;
+        const sig = inkSignature(o);
+        const hit = inkCache.get(o);
+        if (hit && hit.sig === sig && hit.path === o.path && hit.nodes === o.inkNodes) {
+            strs[i] = hit.str;
+            o.toObject = () => hit.plain;
+            patched.push(o);
+        } else fresh.push([i, o, sig]);
+    });
+    let full;
+    try { full = canvas.toObject(extraProps); }
+    finally { for (const o of patched) delete o.toObject; }
+    // full.objects תואם ל־live לפי הסדר, כי שניהם מסוננים באותו אופן
+    for (const [i, o, sig] of fresh) {
+        const plain = full.objects[i];
+        const str = JSON.stringify(plain);
+        inkCache.set(o, { sig, path: o.path, nodes: o.inkNodes, plain, str });
+        strs[i] = str;
+    }
+    for (let i = 0; i < live.length; i++) if (strs[i] === undefined) strs[i] = JSON.stringify(full.objects[i]);
+    const head = JSON.stringify({ ...full, objects: [] });
+    const at = head.indexOf('"objects":[]');
+    const fabricJson = at < 0 ? JSON.stringify(full) : head.slice(0, at) + '"objects":[' + strs.join(',') + ']' + head.slice(at + 12);
+    return { fabric: full, fabricJson };
+};

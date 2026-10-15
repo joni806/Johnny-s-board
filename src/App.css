@@ -337,3 +337,20 @@
   border-color: rgba(255, 255, 255, 0.3);
   transform: translateX(-3px);
 }
+/* ── תיקיות ── */
+.crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 0 2rem 0.5rem; max-width: 1400px; margin: 0 auto; }
+.crumb-wrap { display: inline-flex; align-items: center; }
+.crumb-sep { color: #52525b; margin: 0 2px; }
+.crumb { background: transparent; border: none; color: #a1a1aa; font-size: 1rem; cursor: pointer; padding: 6px 10px; border-radius: 8px; font-family: inherit; }
+.crumb:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
+.crumb.on { color: #4ade80; font-weight: 700; }
+.folder-art { flex: 1; min-height: 120px; display: flex; align-items: center; justify-content: center; color: #4ade80; background: rgba(74, 222, 128, 0.06); }
+.card-actions { display: flex; gap: 2px; }
+.project-card .card-actions .btn-delete { opacity: 1; }
+.move-list { display: flex; flex-direction: column; gap: 4px; max-height: 50vh; overflow-y: auto; margin-bottom: 14px; }
+.move-list button { text-align: start; padding: 10px 14px; border-radius: 10px; border: none; background: rgba(255, 255, 255, 0.06); color: #e4e4e7; font-size: 15px; cursor: pointer; font-family: inherit; }
+.move-list button:hover:not(:disabled) { background: rgba(74, 222, 128, 0.18); }
+.move-list button:disabled { opacity: 0.35; cursor: default; }
+.move-empty { color: #71717a; font-size: 13px; padding: 8px; }
+.card-actions .btn-delete:not(:last-child) { background: rgba(255, 255, 255, 0.08); color: #d4d4d8; font-size: 16px; }
+.card-actions .btn-delete:not(:last-child):hover { background: rgba(74, 222, 128, 0.25); color: #fff; box-shadow: none; }
