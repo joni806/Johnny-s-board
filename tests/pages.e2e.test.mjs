@@ -72,6 +72,18 @@ await pg.waitForTimeout(2500); await pg.reload({ waitUntil: 'networkidle' });
 await pg.locator('.project-card').first().click(); await pg.waitForSelector('#drawing-canvas'); await pg.waitForTimeout(800);
 check('הפריסה נשמרה אחרי טעינה', (await pg.locator('[data-page]').count()) >= 1 && (await pg.locator('.page-nav').count()) === 1);
 const rb = await pg.locator('[data-page]').first().boundingBox(); check('  והדף מותאם למסך אחרי הטעינה', rb && rb.width > 300 && rb.width <= 1280, JSON.stringify(rb));
+// דף אחד ארוך: ברוחב דף ואורך בלי סוף
+await pg.evaluate(()=>window.__pbSetLayout({mode:'scroll-v',orientation:'portrait',paper:'a4'})); await pg.waitForTimeout(600);
+check('דף ארוך: יריעה אחת', (await pg.locator('[data-page]').count()) === 1);
+const strip1 = await pg.locator('[data-page="0"]').boundingBox();
+for (let i = 0; i < 30; i++) await pg.mouse.wheel(0, 3000);
+await pg.waitForTimeout(500);
+const stripV = await vpt();
+const stripBox = await pg.locator('[data-page="0"]').boundingBox();
+check('דף ארוך: אפשר לגלול עד סוף היריעה ולא מעבר', stripBox.y + stripBox.height >= 0 && stripBox.y + stripBox.height < 800, JSON.stringify(stripBox));
+await pg.evaluate(()=>window.__pbSetLayout({mode:'scroll-h',orientation:'landscape'})); await pg.waitForTimeout(600);
+const hb2 = await pg.locator('[data-page="0"]').boundingBox();
+check('דף רחב: נפתח בגובה דף ורוחב דף ויותר', hb2.width >= hb2.height, JSON.stringify(hb2));
 await pg.evaluate(()=>window.__pbSetLayout({mode:'infinite'})); await pg.waitForTimeout(400);
 check('חזרה לאינסופי מסירה את הדפים', (await pg.locator('[data-page]').count()) === 0);
 const vi = await vpt(); check('חזרה לאינסופי מאפסת זום', vi[0] === 1 && vi[4] === 0);

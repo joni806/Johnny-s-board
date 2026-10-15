@@ -22,10 +22,22 @@ export const PAPER_SIZES = [
 
 export const LAYOUT_MODES = [
     { id: 'infinite', label: 'לוח אינסופי', hint: 'אין גבולות. מזיזים ומגדילים לכל כיוון.' },
-    { id: 'vertical', label: 'דפים בגלילה אנכית', hint: 'דפים זה מתחת לזה, וגוללים ביניהם ברצף.' },
-    { id: 'horizontal', label: 'דפים בגלילה אופקית', hint: 'דפים זה לצד זה, וגוללים הצידה.' },
-    { id: 'single', label: 'דף אחד בכל פעם', hint: 'מציג דף שלם, ועוברים בין הדפים בכפתורים.' },
+    { id: 'vertical', label: 'דפים בגלילה אנכית', hint: 'דפים זה מתחת לזה. כשנגמר דף גוללים ונפתח עוד אחד, בלי סוף.' },
+    { id: 'horizontal', label: 'דפים בגלילה אופקית', hint: 'דפים זה לצד זה. כשנגמר דף גוללים הצידה ונפתח עוד אחד, בלי סוף.' },
+    { id: 'single', label: 'דף אחד בכל פעם', hint: 'מציג דף שלם, ועוברים בין הדפים בכפתורים. דף חדש נפתח כשצריך.' },
+    { id: 'scroll-v', label: 'דף אחד ארוך', hint: 'ברוחב של דף, והאורך שלו ממשיך למטה בלי סוף.' },
+    { id: 'scroll-h', label: 'דף אחד רחב', hint: 'בגובה של דף, והרוחב שלו ממשיך הצידה בלי סוף.' },
 ];
+
+/** מצבים שבהם הדפים מתחברים ליריעה אחת רציפה */
+export const isStrip = (layout) => layout.mode === 'scroll-v' || layout.mode === 'scroll-h';
+/** האם הגלילה אופקית */
+export const isHorizontalFlow = (layout) => layout.mode === 'horizontal' || layout.mode === 'scroll-h';
+/** האם הגלילה אנכית, והדף מוצג מהחלק העליון שלו */
+export const isVerticalFlow = (layout) => layout.mode === 'vertical' || layout.mode === 'scroll-v';
+
+/** כמה דפים מוצגים לכל הפחות. מעבר לזה נפתחים דפים לפי הצורך */
+export const MIN_PAGES = 2;
 
 /** יחידות לוח לכל מילימטר, בקנה מידה 100%: כמו פיקסל של מסך בגודל 96 נקודות לאינץ' */
 export const UNITS_PER_MM = 96 / 25.4;
@@ -37,8 +49,7 @@ export const DEFAULT_LAYOUT = {
     customW: 210,      // מ"מ, כשהנייר הוא "מותאם"
     customH: 297,
     scale: 100,        // אחוזים. דף גדול יותר = כתב קטן יותר ביחס אליו
-    count: 'auto',     // 'auto' מוסיף דפים תוך כדי כתיבה, או מספר קבוע
-    pages: 3,          // כמה דפים כשהמספר קבוע, ומינימום כשהוא אוטומטי
+    pages: MIN_PAGES,  // מינימום דפים מוצגים. נפתחים עוד אוטומטית, בלי תקרה
     gap: 36,           // רווח בין דפים, ביחידות לוח
     numbers: true,
 };
@@ -60,8 +71,7 @@ export function normalizeLayout(raw) {
         customW: clamp(r.customW, 40, 2000, d.customW),
         customH: clamp(r.customH, 40, 2000, d.customH),
         scale: Math.round(clamp(r.scale, 25, 400, d.scale)),
-        count: r.count === 'fixed' ? 'fixed' : 'auto',
-        pages: Math.round(clamp(r.pages, 1, 200, d.pages)),
+        pages: Math.round(clamp(r.pages, MIN_PAGES, 5000, d.pages)),
         gap: Math.round(clamp(r.gap, 0, 200, d.gap)),
         numbers: r.numbers !== false,
     };
@@ -94,8 +104,18 @@ export const gapOf = (layout) => (layout.mode === 'single' ? Math.max(layout.gap
  */
 export function layoutPages(layout, pageCount) {
     const { w, h } = pageSize(layout);
-    const horizontal = layout.mode === 'horizontal';
-    const gap = gapOf(layout);
+    const n0 = Math.max(1, Math.round(pageCount) || 1);
+    // יריעה אחת: מלבן יחיד שאורכו כאורך כל הדפים יחד
+    if (layout.mode === 'scroll-v') return [{ index: 0, x: 0, y: 0, w, h: h * n0, unit: h }];
+    if (layout.mode === 'scroll-h') return [{ index: 0, x: 0, y: 0, w: w * n0, h, unit: w }];
+    return navPages(layout, pageCount);
+}
+
+/** הדפים לצורכי ניווט: גם ביריעה רציפה מחולקת לדפים וירטואליים, בלי רווחים */
+export function navPages(layout, pageCount) {
+    const { w, h } = pageSize(layout);
+    const horizontal = layout.mode === 'horizontal' || layout.mode === 'scroll-h';
+    const gap = isStrip(layout) ? 0 : gapOf(layout);
     const n = Math.max(1, Math.round(pageCount) || 1);
     const pages = [];
     for (let i = 0; i < n; i++) {
@@ -109,11 +129,10 @@ export function layoutPages(layout, pageCount) {
 /** כמה דפים צריכים להיות: המספר הקבוע, או כמה שהכתב דורש ועוד דף ריק אחד */
 export function pageCountFor(layout, inkBounds) {
     const base = layout.pages;
-    if (layout.count === 'fixed') return base;
     if (!inkBounds) return base;
     const { w, h } = pageSize(layout);
-    const horizontal = layout.mode === 'horizontal';
-    const stride = (horizontal ? w : h) + gapOf(layout);
+    const horizontal = isHorizontalFlow(layout);
+    const stride = (horizontal ? w : h) + (isStrip(layout) ? 0 : gapOf(layout));
     const end = horizontal ? inkBounds.right : inkBounds.bottom;
     const lastWithInk = Math.max(0, Math.floor(end / stride));
     return Math.max(base, lastWithInk + 2);
@@ -141,7 +160,8 @@ export const mergeBounds = (a, b) => (!a ? b : !b ? a : {
 export function fitZoom(layout, vw, vh, pad = 24) {
     const { w, h } = pageSize(layout);
     const aw = Math.max(50, vw - pad * 2), ah = Math.max(50, vh - pad * 2);
-    if (layout.mode === 'vertical') return aw / w;
+    if (layout.mode === 'vertical' || layout.mode === 'scroll-v') return aw / w;
+    if (layout.mode === 'scroll-h') return ah / h;
     return Math.min(aw / w, ah / h);
 }
 
@@ -187,7 +207,7 @@ export function currentPageIndex(pages, vpt, vw, vh, layout) {
     if (!pages.length) return 0;
     const z = vpt[0];
     const cx = (vw / 2 - vpt[4]) / z, cy = (vh / 2 - vpt[5]) / z;
-    const horizontal = layout.mode === 'horizontal';
+    const horizontal = isHorizontalFlow(layout);
     let best = 0, bestD = Infinity;
     for (const p of pages) {
         const mid = horizontal ? p.x + p.w / 2 : p.y + p.h / 2;

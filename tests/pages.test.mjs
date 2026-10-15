@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {
-    normalizeLayout, pageSize, layoutPages, pageCountFor, pagesBounds, constrainView, fitZoom,
+    normalizeLayout, pageSize, layoutPages, navPages, isStrip, pageCountFor, pagesBounds, constrainView, fitZoom,
     viewForPage, currentPageIndex, zoomRangeFor, DEFAULT_LAYOUT,
 } from '../src/utils/pages.js';
 let pass = 0, fail = 0;
@@ -10,7 +10,7 @@ console.log('\nפריסת דפים');
 test('פריסה פגומה מתנקה לברירת מחדל', () => {
     assert.deepEqual(normalizeLayout(null), DEFAULT_LAYOUT);
     const n = normalizeLayout({ mode: 'x', scale: 'abc', pages: -4, gap: 9999, paper: 'zzz' });
-    assert.equal(n.mode, 'infinite'); assert.equal(n.scale, 100); assert.equal(n.pages, 1); assert.equal(n.gap, 200); assert.equal(n.paper, 'a4');
+    assert.equal(n.mode, 'infinite'); assert.equal(n.scale, 100); assert.equal(n.pages, 2); assert.equal(n.gap, 200); assert.equal(n.paper, 'a4');
 });
 test('A4 לאורך ולרוחב', () => {
     const p = pageSize(L({})), q = pageSize(L({ orientation: 'landscape' }));
@@ -38,7 +38,17 @@ test('מספר דפים אוטומטי גדל עם הכתב', () => {
     assert.equal(pageCountFor(l, null), 2);
     assert.equal(pageCountFor(l, { left: 0, top: 0, right: 10, bottom: h * 0.5 }), 2);
     assert.equal(pageCountFor(l, { left: 0, top: 0, right: 10, bottom: (h + 36) * 3 + 5 }), 5);
-    assert.equal(pageCountFor(L({ mode: 'vertical', count: 'fixed', pages: 4 }), { left: 0, top: 0, right: 10, bottom: 99999 }), 4);
+    // אין תקרה: ככל שהכתב יורד נפתחים עוד דפים
+    assert.ok(pageCountFor(L({ mode: 'vertical' }), { left: 0, top: 0, right: 10, bottom: 99999 }) > 50);
+});
+test('יריעה רציפה: מלבן אחד ברוחב דף, שאורכו גדל עם הכתב', () => {
+    const l = L({ mode: 'scroll-v' }); const { w, h } = pageSize(l);
+    const [one] = layoutPages(l, 3);
+    assert.equal(layoutPages(l, 3).length, 1); assert.equal(one.w, w); assert.equal(one.h, h * 3); assert.ok(isStrip(l));
+    assert.equal(pageCountFor(l, { left: 0, top: 0, right: 5, bottom: h * 4.5 }), 6);
+    assert.equal(navPages(l, 3).length, 3); assert.equal(navPages(l, 3)[1].y, h);
+    const lh = L({ mode: 'scroll-h' }); const [wide] = layoutPages(lh, 3);
+    assert.equal(wide.h, pageSize(lh).h); assert.equal(wide.w, pageSize(lh).w * 3);
 });
 test('המצלמה לא בורחת מהדפים', () => {
     const l = L({ mode: 'vertical' }); const pages = layoutPages(l, 4); const b = pagesBounds(pages);

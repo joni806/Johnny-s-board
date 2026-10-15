@@ -1,10 +1,10 @@
-import { PAPER_SIZES, LAYOUT_MODES, normalizeLayout, pageSize } from '../utils/pages';
+import { PAPER_SIZES, LAYOUT_MODES, normalizeLayout, pageSize, isStrip } from '../utils/pages';
 
 /**
  * חלונית פריסת הלוח: אינסופי או דפים, גודל דף, כיוון, קנה מידה ועוד.
  * כל שינוי חל מיד על הלוח שמאחור, ללא כפתור "החל".
  */
-export default function LayoutPanel({ layout, pageCount, onChange, onClose, inline = false }) {
+export default function LayoutPanel({ layout, onChange, onClose, inline = false }) {
     const paged = layout.mode !== 'infinite';
     const set = (patch) => onChange(normalizeLayout({ ...layout, ...patch }));
     const paper = PAPER_SIZES.find((p) => p.id === layout.paper) || PAPER_SIZES[0];
@@ -66,7 +66,7 @@ export default function LayoutPanel({ layout, pageCount, onChange, onClose, inli
                         דף של {mm(size.w)}×{mm(size.h)} מ״מ. קנה מידה גדול נותן דף רחב יותר, כך שהכתב נראה קטן ביחס אליו; קטן נותן דף קטן וכתב גדול.
                     </div>
 
-                    {layout.mode !== 'single' && (
+                    {layout.mode !== 'single' && !isStrip(layout) && (
                         <>
                             <div className="lp-label">רווח בין דפים <span className="lp-val">{layout.gap}</span></div>
                             <input className="lp-range" type="range" min="0" max="120" step="4" value={layout.gap}
@@ -74,24 +74,12 @@ export default function LayoutPanel({ layout, pageCount, onChange, onClose, inli
                         </>
                     )}
 
-                    <div className="lp-label">מספר דפים</div>
-                    <div className="lp-two">
-                        <button className={layout.count === 'auto' ? 'on' : ''} onClick={() => set({ count: 'auto' })}>אוטומטי</button>
-                        <button className={layout.count === 'fixed' ? 'on' : ''} onClick={() => set({ count: 'fixed', pages: Math.max(layout.pages, 1) })}>קבוע</button>
-                    </div>
-                    <div className="lp-stepper">
-                        <button onClick={() => set({ pages: layout.pages - 1 })} aria-label="פחות דפים">−</button>
-                        <span>{layout.pages}</span>
-                        <button onClick={() => set({ pages: layout.pages + 1 })} aria-label="עוד דפים">+</button>
-                        <span className="lp-hint" style={{ margin: 0 }}>
-                            {layout.count === 'auto' ? `מינימום. כרגע ${pageCount} דפים, ודף חדש נפתח כשכותבים בדף האחרון.` : 'מספר הדפים בלוח.'}
-                        </span>
-                    </div>
-
-                    <label className="lp-check">
-                        <input type="checkbox" checked={layout.numbers} onChange={(e) => set({ numbers: e.target.checked })} />
-                        הצג מספרי דפים
-                    </label>
+                    {!isStrip(layout) && (
+                        <label className="lp-check">
+                            <input type="checkbox" checked={layout.numbers} onChange={(e) => set({ numbers: e.target.checked })} />
+                            הצג מספרי דפים
+                        </label>
+                    )}
                 </>
             )}
         </div>

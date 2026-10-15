@@ -43,6 +43,8 @@ const r = await pg.evaluate(async()=>{
   ev('pointerdown',420,450,1,.4); ev('pointermove',420,455,1,.4); cm(420,450);
   for(let y=460;y<560;y+=5){ev('pointermove',420,y,1,.4);await sleep(4)} ev('pointerup',420,560,0,0); await sleep(200);
   out.afterButton=n(); out.mode=document.querySelector('.pb-btn.active .pb-btn-label')?.innerText;
+  // the button was released (hover reports zeros), as with a real pen
+  for(let i=0;i<8;i++){ev('pointermove',700,200,0,0);await sleep(40)}
   // normal long press (late contextmenu) must not erase
   ev('pointerdown',700,200,1,.4); await sleep(600); cm(700,200);
   for(let x=700;x<800;x+=5){ev('pointermove',x,200,1,.4);await sleep(4)} ev('pointerup',800,200,0,0); await sleep(200);
@@ -60,7 +62,8 @@ const late = await pg.evaluate(async()=>{
   const sleep=(ms)=>new Promise(r=>setTimeout(r,ms)); const cv=document.getElementById('drawing-canvas');
   const ev=(t,x,y,b,p)=>cv.dispatchEvent(new PointerEvent(t,{bubbles:true,cancelable:true,clientX:x,clientY:y,pointerId:11,pointerType:'pen',pressure:p,buttons:b,button:t==='pointermove'?-1:0,isPrimary:true}));
   const n=()=>window.__pbCanvas.getObjects().length;
-  window.__pbBoard.clearBoard(); await sleep(200);
+  window.__pbBoard.clearBoard(); await sleep(200); const hover=async(ev,x,y,ms=320)=>{for(let i=0;i<ms/40;i++){ev('pointermove',x,y,0,0);await sleep(40)}};
+  await hover(ev,300,400);
   ev('pointerdown',300,400,1,.4); for(let x=300;x<600;x+=10){ev('pointermove',x,400+5*Math.sin(x/20),1,.4);await sleep(4)} ev('pointerup',600,400,0,0); await sleep(150);
   const start=n();
   ev('pointerdown',450,330,1,.08); ev('pointermove',450,340,1,.2);
@@ -78,7 +81,8 @@ const flick = await pg.evaluate(async()=>{
   const sleep=(ms)=>new Promise(r=>setTimeout(r,ms)); const cv=document.getElementById('drawing-canvas');
   const ev=(t,x,y,b,p)=>cv.dispatchEvent(new PointerEvent(t,{bubbles:true,cancelable:true,clientX:x,clientY:y,pointerId:12,pointerType:'pen',pressure:p,buttons:b,button:t==='pointermove'?-1:0,isPrimary:true}));
   const n=()=>window.__pbCanvas.getObjects().length;
-  await sleep(800); const start=n();
+  await sleep(800); const start=n(); const hover=async(ev,x,y,ms=320)=>{for(let i=0;i<ms/40;i++){ev('pointermove',x,y,0,0);await sleep(40)}};
+  await hover(ev,520,330);
   ev('pointermove',520,330,1,0); ev('pointermove',521,331,0,0); await sleep(60);
   ev('pointerdown',520,330,1,.1); for(let y=335;y<470;y+=6){ev('pointermove',520,y,1,.3);await sleep(4)} ev('pointerup',520,470,0,0);
   await sleep(250);
@@ -92,7 +96,8 @@ const lp = await pg.evaluate(async()=>{
   const sleep=(ms)=>new Promise(r=>setTimeout(r,ms)); const cv=document.getElementById('drawing-canvas');
   const ev=(t,x,y,b,p)=>cv.dispatchEvent(new PointerEvent(t,{bubbles:true,cancelable:true,clientX:x,clientY:y,pointerId:13,pointerType:'pen',pressure:p,buttons:b,button:t==='pointermove'?-1:0,isPrimary:true}));
   const n=()=>window.__pbCanvas.getObjects().length;
-  window.__pbBoard.clearBoard(); await sleep(200);
+  window.__pbBoard.clearBoard(); await sleep(200); const hover=async(ev,x,y,ms=320)=>{for(let i=0;i<ms/40;i++){ev('pointermove',x,y,0,0);await sleep(40)}};
+  await hover(ev,300,400);
   ev('pointerdown',300,400,1,.4); for(let x=300;x<600;x+=10){ev('pointermove',x,400,1,.4);await sleep(4)} ev('pointerup',600,400,0,0); await sleep(900);
   const start=n();
   ev('pointerdown',800,600,1,.4); for(let k=0;k<12;k++){ev('pointermove',800+(k%2),600,1,.4);await sleep(60)}
@@ -106,6 +111,28 @@ check('לחיצה ארוכה בעט פותחת את הגדרות הלוח', lp.s
 check('  בלי למחוק ובלי לצייר', lp.start === 1 && lp.after === 1, JSON.stringify(lp));
 check('  והעט נשאר עט', lp.mode === 'עט', lp.mode);
 await pg.mouse.click(5, 790); await pg.waitForTimeout(200);
+
+// כפתור לחוץ כל הזמן: נגיעה אחרי נגיעה, בלי ללחוץ ולשחרר מחדש. אחרי שחרור הכפתור העט כותב
+const held = await pg.evaluate(async()=>{
+  const sleep=(ms)=>new Promise(r=>setTimeout(r,ms)); const cv=document.getElementById('drawing-canvas');
+  const ev=(t,x,y,b,p)=>cv.dispatchEvent(new PointerEvent(t,{bubbles:true,cancelable:true,clientX:x,clientY:y,pointerId:14,pointerType:'pen',pressure:p,buttons:b,button:t==='pointermove'?-1:0,isPrimary:true}));
+  const n=()=>window.__pbCanvas.getObjects().length;
+  const hover=async(b,x,y,ms)=>{for(let i=0;i<ms/40;i++){ev('pointermove',x,y,b,0);await sleep(40)}};
+  window.__pbBoard.clearBoard(); await sleep(200);
+  const stroke=async(y)=>{ev('pointerdown',300,y,1,.4); for(let x=300;x<700;x+=10){ev('pointermove',x,y+3*Math.sin(x/9),1,.4);await sleep(3)} ev('pointerup',700,y,0,0);};
+  await hover(0,300,300,320); await stroke(300); await stroke(340); await stroke(380); await sleep(300);   // שלוש משיכות רגילות
+  const start=n();
+  await hover(1,300,200,200);                                    // הכפתור נלחץ ונשאר לחוץ
+  const sweep=async(y)=>{ev('pointerdown',300,y,1,.4); for(let x=300;x<700;x+=10){ev('pointermove',x,y,1,.4);await sleep(3)} ev('pointerup',700,y,0,0);};
+  await sweep(300); await sleep(60); await sweep(340); await sleep(60); await sweep(380);   // מחיקה ברצף, בלי ריחוף ביניהן
+  await sleep(300);
+  const erased=n();
+  await hover(0,300,200,400);                                    // הכפתור שוחרר
+  await stroke(450); await sleep(300);
+  return { start, erased, after:n() };
+});
+check('כפתור לחוץ: מחיקות רצופות בלי ללחוץ שוב', held.start === 3 && held.erased < held.start, JSON.stringify(held));
+check('  אחרי שחרור הכפתור העט כותב שוב', held.after === held.erased + 1, JSON.stringify(held));
 check('אין שגיאות ריצה', errs.length === 0, errs.join(' | '));
 await b.close(); s.close();
 process.exit(fail ? 1 : 0);

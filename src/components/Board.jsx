@@ -28,7 +28,7 @@ import RecorderBar from './RecorderBar';
 import LayoutPanel from './LayoutPanel';
 import PageNav from './PageNav';
 import {
-    normalizeLayout, isPaged, layoutPages, pageCountFor, pagesBounds, mergeBounds, constrainView, fitZoom,
+    normalizeLayout, isPaged, layoutPages, navPages, isVerticalFlow, pageCountFor, pagesBounds, mergeBounds, constrainView, fitZoom,
     viewForPage, currentPageIndex, zoomRangeFor, deskColorFor, pointOnPage,
 } from '../utils/pages';
 import { solveExpression, runCasAction, terminateMathWorker } from '../utils/mathEngine';
@@ -389,6 +389,8 @@ const sb = useRef({
         return { vw: el?.clientWidth || window.innerWidth, vh: el?.clientHeight || window.innerHeight };
     };
     const currentPages = () => layoutPages(layoutRef.current, pageCountRef.current);
+    /** הדפים לניווט: ביריעה רציפה אלה דפים וירטואליים לפי גובה או רוחב דף */
+    const navList = () => navPages(layoutRef.current, pageCountRef.current);
     const constrainCam = (v) => {
         const lay = layoutRef.current;
         if (!isPaged(lay)) return v;
@@ -418,12 +420,16 @@ const sb = useRef({
     const goToPage = (i, fit = false) => {
         const lay = layoutRef.current;
         if (!isPaged(lay) || !fCanvas.current) return;
-        const pages = currentPages();
+        // בדף אחד בכל פעם, "הבא" מהדף האחרון פותח דף חדש
+        if (i >= pageCountRef.current) {
+            changeLayout({ ...lay, pages: i + 1 }, { refit: false });
+        }
+        const pages = navList();
         const idx = Math.max(0, Math.min(pages.length - 1, i));
         const { vw, vh } = viewSize();
         curPageRef.current = idx; setCurPage(idx);
         const zoom = fit || lay.mode === 'single' ? fitZoom(lay, vw, vh) : liveZoom();
-        animateViewTo(constrainCam(viewForPage(pages[idx], zoom, vw, vh, lay.mode === 'vertical')));
+        animateViewTo(constrainCam(viewForPage(pages[idx], zoom, vw, vh, isVerticalFlow(lay))));
     };
     /** הצגה מותאמת של הדף הנוכחי, או איפוס ל־100% בלוח אינסופי */
     const refitView = () => {
@@ -433,10 +439,10 @@ const sb = useRef({
         const lay = layoutRef.current;
         if (!isPaged(lay)) { canvas.setViewportTransform([1, 0, 0, 1, 0, 0]); syncCustomLayers(); return; }
         const { vw, vh } = viewSize();
-        const pages = currentPages();
+        const pages = navList();
         const idx = Math.min(curPageRef.current, pages.length - 1);
         curPageRef.current = idx; setCurPage(idx);
-        canvas.setViewportTransform(constrainCam(viewForPage(pages[idx], fitZoom(lay, vw, vh), vw, vh, lay.mode === 'vertical')));
+        canvas.setViewportTransform(constrainCam(viewForPage(pages[idx], fitZoom(lay, vw, vh), vw, vh, isVerticalFlow(lay))));
         syncCustomLayers();
     };
     /** כמה דפים צריכים להיות, לפי גבולות הכתב. נקרא רק כשיש דפים */
@@ -468,11 +474,7 @@ const sb = useRef({
         clearTimeout(sb.current.layoutSaveTimer);
         sb.current.layoutSaveTimer = setTimeout(() => { if (onAutoSave) onAutoSave({ layout: layoutRef.current }); }, 500);
     };
-    const addPage = () => {
-        const n = pageCountRef.current + 1;
-        changeLayout({ ...layoutRef.current, pages: n }, { refit: false });
-        goToPage(n - 1);
-    };
+    const addPage = () => goToPage(pageCountRef.current);
     /** מחיל את המחווה על Fabric ומצייר פעם אחת, באותו פריים שבו הטרנספורם מתאפס */
     const endViewGesture = () => {
         clearTimeout(sb.current.viewIdle);
@@ -529,7 +531,7 @@ const syncCustomLayers = () => {
         const lay = layoutRef.current;
         if (isPaged(lay) && lay.mode !== 'single') {
             const { vw, vh } = viewSize();
-            const idx = currentPageIndex(currentPages(), vpt, vw, vh, lay);
+            const idx = currentPageIndex(navList(), vpt, vw, vh, lay);
             if (idx !== curPageRef.current) { curPageRef.current = idx; setCurPage(idx); }
         }
 
@@ -865,11 +867,23 @@ window.addEventListener('pointercancel', handleGlobalPointerGone);
             // רק אירועי ריחוף (לחץ 0) משנים את המצב. אירוע מגע שמגיע רגע לפני
             // ה־pointerdown לא מוחק את הלחיצה שנקלטה באוויר
             if (e.type === 'pointermove' && !sb.current.penDown && e.pressure === 0) {
-                sb.current.barrelHeld = (e.buttons & 3) !== 0;
-                // הדיווח של הכפתור בריחוף מהבהב בין 1 ל־0, ולכן זוכרים מתי נראה לאחרונה
-                if (sb.current.barrelHeld) sb.current.barrelSeenAt = e.timeStamp;
+                if ((e.buttons & 3) !== 0) {
+                    sb.current.barrelHeld = true;
+                    sb.current.barrelSeenAt = e.timeStamp;
+                    sb.current.barrelZeroSince = null;
+                } else {
+                    // הדיווח של הכפתור בריחוף מהבהב בין 1 ל־0, ולכן הכפתור נחשב משוחרר רק אחרי
+                    // רבע שנייה רצופה של אפסים
+                    if (sb.current.barrelZeroSince == null) sb.current.barrelZeroSince = e.timeStamp;
+                    if (e.timeStamp - sb.current.barrelZeroSince > 250) sb.current.barrelHeld = false;
+                }
             }
-            else if (e.type === 'pointerup' || e.type === 'pointercancel') sb.current.barrelHeld = false;
+            else if (e.type === 'pointerup' || e.type === 'pointercancel') {
+                // משיכה שנעשתה עם הכפתור לחוץ: הכפתור כנראה עדיין לחוץ, והנגיעה הבאה
+                // תהיה גם היא עם הכלי של הכפתור, בלי ללחוץ ולשחרר מחדש
+                if (sb.current.penSession) { sb.current.barrelHeld = true; sb.current.barrelSeenAt = e.timeStamp; sb.current.barrelZeroSince = null; }
+                else sb.current.barrelHeld = false;
+            }
             if (e.type === 'pointerdown') sb.current.penDown = true;
             else if (e.type === 'pointerup' || e.type === 'pointercancel') sb.current.penDown = false;
             if (!devicePrefsRef.current.penSeen) {
@@ -978,7 +992,7 @@ window.removeEventListener('pointercancel', handleGlobalPointerGone);
     }
 
     // כפתור הצד של העט, או קצה מחק: המשיכה מנותבת לכלי שהוגדר לכפתור
-    const barrel = (e.pointerType === 'pen' && (isBarrelPressed(e) || sb.current.barrelHeld || e.timeStamp - (sb.current.barrelSeenAt ?? -1e9) < 450))
+    const barrel = (e.pointerType === 'pen' && (isBarrelPressed(e) || (sb.current.barrelHeld && e.timeStamp - (sb.current.barrelSeenAt ?? -1e9) < 900) || e.timeStamp - (sb.current.barrelSeenAt ?? -1e9) < 450))
         // יש דפדפנים שמעבירים עט עם כפתור לחוץ כלחיצה ימנית של עכבר
         || (e.pointerType === 'mouse' && devicePrefsRef.current.penSeen && (e.button === 2 || (e.buttons & 2) !== 0));
     if (barrel || isEraserTip(e)) {
@@ -1930,7 +1944,6 @@ const handleViewportPointerUp = (e) => {
         }
         if (!sb.current.pendingSave) return;
         sb.current.pendingSave = false;
-        const t0 = performance.now();
         const state = captureState();
         if (!state) return;
         const stack = sb.current.historyStack;
@@ -1942,8 +1955,6 @@ const handleViewportPointerUp = (e) => {
         const seen = prev ? new Set(prev.strs) : null;
         entry.cost = entry.prefix.length + entry.tail.length + entry.math.length;
         for (const str of entry.strs) if (!seen || !seen.has(str)) entry.cost += str.length;
-        // זמן הצילום האחרון, לאבחון מהקונסולה: window.__pbPerf
-        window.__pbPerf = { ...(window.__pbPerf || {}), flushMs: Math.round(performance.now() - t0), objects: entry.strs.length };
         stack.push(entry);
         sb.current.historyBytes = (sb.current.historyBytes || 0) + entry.cost;
         while (stack.length > HISTORY_MAX_STEPS
@@ -4060,6 +4071,20 @@ const restore = (state) => {
     const paged = isPaged(layout);
     const pageRects = paged ? layoutPages(layout, pageCount) : [];
     const pageStyle = patternStyle(boardPatternType, patternColorRGB, 1);
+    /** רקע הדף: התבנית שנבחרה, ובגיליון רציף גם קו מקווקו בכל גבול של דף */
+    const pageBackground = (pg) => {
+        if (!pg.unit) return { backgroundImage: pageStyle.image, backgroundSize: pageStyle.size };
+        const vertical = pg.h > pg.unit + 0.5;
+        const line = `rgba(${patternColorRGB}, 0.28)`;
+        const marks = vertical
+            ? `repeating-linear-gradient(to bottom, transparent 0, transparent ${pg.unit - 2}px, ${line} ${pg.unit - 2}px, ${line} ${pg.unit}px)`
+            : `repeating-linear-gradient(to right, transparent 0, transparent ${pg.unit - 2}px, ${line} ${pg.unit - 2}px, ${line} ${pg.unit}px)`;
+        const hasPattern = pageStyle.image !== 'none';
+        return {
+            backgroundImage: hasPattern ? `${marks}, ${pageStyle.image}` : marks,
+            backgroundSize: hasPattern ? `100% 100%, ${pageStyle.size}` : '100% 100%',
+        };
+    };
     // פרטי היעד של תפריט ההקשר, מחושבים פעם אחת לרינדור
     const cmTarget = contextMenu.visible ? contextMenu.target : null;
     const cmType = cmTarget ? typeOf(cmTarget) : '';
@@ -4376,12 +4401,12 @@ const restore = (state) => {
 )}
 
 {paged && (
-                <PageNav layout={layout} page={Math.min(curPage, pageCount - 1)} count={pageCount}
+                <PageNav layout={layout} page={Math.min(curPage, pageCount - 1)}
                     onGo={(i) => goToPage(i)} onAdd={addPage} onFit={() => goToPage(curPageRef.current, true)}
                     onSettings={() => setShowLayoutPanel(true)} />
             )}
             {showLayoutPanel && (
-                <LayoutPanel layout={layout} pageCount={pageCount} onChange={(l) => changeLayout(l)}
+                <LayoutPanel layout={layout} onChange={(l) => changeLayout(l)}
                     onClose={() => setShowLayoutPanel(false)} />
             )}
 
@@ -4568,10 +4593,10 @@ const restore = (state) => {
             {pageRects.map((pg) => (
                 <div key={pg.index} data-page={pg.index} style={{
                     position: 'absolute', left: pg.x, top: pg.y, width: pg.w, height: pg.h, borderRadius: 2,
-                    backgroundColor: boardColor, backgroundImage: pageStyle.image, backgroundSize: pageStyle.size,
+                    backgroundColor: boardColor, ...pageBackground(pg),
                     boxShadow: '0 3px 18px rgba(0,0,0,0.45), 0 0 0 1px rgba(128,128,128,0.4)',
                 }}>
-                    {layout.numbers && (
+                    {layout.numbers && !pg.unit && (
                         <span style={{
                             position: 'absolute', bottom: 8, left: 0, right: 0, textAlign: 'center', userSelect: 'none',
                             fontSize: Math.max(13, pg.w * 0.022), color: `rgba(${patternColorRGB}, 0.4)`, fontFamily: 'Assistant, Arial, sans-serif',

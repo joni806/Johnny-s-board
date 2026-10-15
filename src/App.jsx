@@ -492,7 +492,7 @@ function App() {
 
             <div className="form-group">
               <label className="form-label">סוג הלוח</label>
-              <LayoutPanel inline layout={newLayout} pageCount={newLayout.pages} onChange={setNewLayout} />
+              <LayoutPanel inline layout={newLayout} onChange={setNewLayout} />
             </div>
 
             <div className="modal-actions">
