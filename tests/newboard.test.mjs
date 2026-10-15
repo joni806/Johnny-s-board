@@ -1,0 +1,28 @@
+/* בחירת פריסה כבר בעת יצירת לוח חדש */
+import { chromium } from 'playwright';
+import { createServer } from 'http';
+import { readFile } from 'fs/promises';
+import { extname, join, normalize } from 'path';
+import { fileURLToPath } from 'url';
+const root = fileURLToPath(new URL('../dist/', import.meta.url));
+const T={'.html':'text/html','.js':'text/javascript','.css':'text/css'};
+const s = createServer(async (q,r)=>{try{const p=normalize(join(root,decodeURIComponent(q.url.split('?')[0])));const f=(p.endsWith('/')||p.endsWith(String.fromCharCode(92)))?join(p,'index.html'):p;r.writeHead(200,{'Content-Type':T[extname(f)]||'application/octet-stream'});r.end(await readFile(f))}catch{r.writeHead(404);r.end()}});
+await new Promise(r=>s.listen(0,r));
+const b = await chromium.launch(); const pg = await (await b.newContext({viewport:{width:1280,height:800}})).newPage();
+const errs=[]; pg.on('pageerror',e=>errs.push(e.message));
+await pg.goto(`http://127.0.0.1:${s.address().port}/`,{waitUntil:'networkidle'});
+let fail=0; const check=(n,ok,d='')=>{console.log(`${ok?'PASS':'FAIL'} | ${n} ${ok?'':d}`); if(!ok) fail++;};
+await pg.locator('header .btn-create-new').click();
+check('חלון לוח חדש מציג את בחירת הפריסה', (await pg.locator('.modal-content .lp-modes').count())===1);
+await pg.locator('.lp-modes button', {hasText:'דפים בגלילה אנכית'}).click();
+await pg.locator('.lp-chips button', {hasText:'A5'}).click();
+await pg.locator('.lp-two button', {hasText:'לרוחב'}).first().click();
+await pg.locator('.modal-actions .btn-create-new').click(); await pg.waitForSelector('#drawing-canvas'); await pg.waitForTimeout(700);
+check('הלוח נפתח עם דפים', (await pg.locator('[data-page]').count())>=2);
+const bb = await pg.locator('[data-page="0"]').boundingBox();
+check('לרוחב: הדף רחב מגבוה', bb && bb.width>bb.height, JSON.stringify(bb));
+check('המסך מותאם לדף', bb.width>300 && bb.width<=1280);
+await pg.reload({waitUntil:'networkidle'}); await pg.locator('.project-card').first().click(); await pg.waitForSelector('#drawing-canvas'); await pg.waitForTimeout(700);
+check('הפריסה נשמרה', (await pg.locator('[data-page]').count())>=2);
+check('אין שגיאות', errs.length===0, errs.join('|'));
+console.log(fail?`\n${fail} נכשלו`:'\nהכול עבר'); await b.close(); s.close(); if(fail) process.exit(1);

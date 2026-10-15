@@ -36,9 +36,9 @@ const res = await pg.evaluate(async ([N,PTS])=>{
     out.push({i,stroke:t1-t0,settle:t2-t1});
     await sleep(40);
   }
-  const lc=window.__pbCanvas.lowerCanvasEl; const snap=()=>{const d=lc.getContext('2d').getImageData(0,0,lc.width,lc.height).data; let h=0; for(let i=0;i<d.length;i+=4){h=(h*31+d[i]+d[i+1]*3+d[i+3]*7)|0;} return h;}; const hBefore=snap(); const t=performance.now(); window.__pbCanvas.renderAll(); const hAfter=snap(); const renderAll=performance.now()-t;
+  await new Promise(r=>setTimeout(r,2500)); const ltDuring=longTasks.slice(); const lc=window.__pbCanvas.lowerCanvasEl; const snap=()=>{const d=lc.getContext('2d').getImageData(0,0,lc.width,lc.height).data; let h=0; for(let i=0;i<d.length;i+=4){h=(h*31+d[i]+d[i+1]*3+d[i+3]*7)|0;} return h;}; const hBefore=snap(); const t=performance.now(); window.__pbCanvas.renderAll(); const hAfter=snap(); const renderAll=performance.now()-t;
   const t3=performance.now(); const st=window.__pbCanvas.toObject(['customType']); const json=JSON.stringify(st); const ser=performance.now()-t3;
-  return {same:hBefore===hAfter,out,longTasks,renderAll,ser,jsonKB:Math.round(json.length/1024),objs:window.__pbCanvas.getObjects().length};
+  return {ltDuring,same:hBefore===hAfter,out,longTasks,renderAll,ser,jsonKB:Math.round(json.length/1024),objs:window.__pbCanvas.getObjects().length};
 }, [N,PTS]);
 if (PROF) { const {profile}=await cdp0.send('Profiler.stop'); const self=new Map(); const byId=new Map(profile.nodes.map(n=>[n.id,n])); const dt=profile.timeDeltas; profile.samples.forEach((id,i)=>{const n=byId.get(id); const k=n.callFrame.functionName+' '+n.callFrame.url.split('/').pop()+':'+n.callFrame.lineNumber; self.set(k,(self.get(k)||0)+(dt[i]||0));});
  console.log([...self.entries()].sort((a,b)=>b[1]-a[1]).slice(0,22).map(([k,v])=>(v/1000).toFixed(0).padStart(7)+'ms '+k).join(String.fromCharCode(10))); }
@@ -47,6 +47,6 @@ for (const [a,z] of [[0,20],[N/4|0,N/4+20|0],[N/2|0,N/2+20|0],[N-20,N]]) {
   const seg=res.out.slice(a,z); console.log(`strokes ${a}-${z}: stroke ${avg(seg.map(x=>x.stroke)).toFixed(1)}ms, settle(max) ${Math.max(...seg.map(x=>x.settle)).toFixed(0)}ms`);
 }
 console.log('incremental render matches full render:',res.same); console.log('objs',res.objs,'renderAll ms',res.renderAll.toFixed(0),'serialize ms',res.ser.toFixed(0),'json KB',res.jsonKB);
-const lt=res.longTasks; console.log('top longtasks',lt.slice().sort((a,b)=>b-a).slice(0,6).map(x=>x.toFixed(0)).join(',')); console.log('longtasks',lt.length,'max',Math.max(0,...lt).toFixed(0),'total',lt.reduce((a,b)=>a+b,0).toFixed(0));
+const lt=res.ltDuring; console.log('top longtasks',lt.slice().sort((a,b)=>b-a).slice(0,6).map(x=>x.toFixed(0)).join(',')); console.log('longtasks',lt.length,'max',Math.max(0,...lt).toFixed(0),'total',lt.reduce((a,b)=>a+b,0).toFixed(0));
 console.log('errors',errs);
 await b.close(); s.close();

@@ -3,7 +3,7 @@
  * רצות ב־Node בלי דפדפן: node tests/ink.test.mjs
  */
 import assert from 'node:assert/strict';
-import { createInkStroke, buildPressurePath, dotPath, INK_DEFAULTS } from '../src/utils/ink.js';
+import { createInkStroke, buildPressurePath, dotPath, INK_DEFAULTS, PRESSURE_PRESETS } from '../src/utils/ink.js';
 
 let pass = 0, fail = 0;
 const test = (name, fn) => {
@@ -60,12 +60,28 @@ test('לחץ גבוה מייצר רצועה רחבה יותר מלחץ נמוך'
     assert.ok(spread(wide) > spread(thin) * 1.5, `רחב ${spread(wide).toFixed(2)} מול דק ${spread(thin).toFixed(2)}`);
 });
 
-test('רוחב הרצועה קרוב לרוחב הבסיס בלחץ בינוני', () => {
+test('רוחב הרצועה בלחץ בינוני עבה מהבסיס אך סביר', () => {
     const pts = pathPoints(buildPressurePath(straight(60, 0.55), { baseWidth: 8 }));
     const mid = pts.filter((p) => p.x > 80 && p.x < 140);
     const ys = mid.map((p) => p.y);
     const spread = Math.max(...ys) - Math.min(...ys);
-    assert.ok(spread > 3 && spread < 13, `רוחב בפועל ${spread.toFixed(2)} עבור בסיס 8`);
+    assert.ok(spread > 3 && spread < 20, `רוחב בפועל ${spread.toFixed(2)} עבור בסיס 8`);
+});
+
+const midWidth = (pressure, preset) => {
+    const st = createInkStroke({ baseWidth: 3, ...PRESSURE_PRESETS[preset] });
+    straight(60, pressure).forEach((q) => st.push(q));
+    const ys = pathPoints(st.toPathData()).filter((q) => q.x > 80 && q.x < 140).map((q) => q.y);
+    return Math.max(...ys) - Math.min(...ys);
+};
+test('לחיצה חזקה עבה לפחות פי שניים מלחיצה קלה', () => {
+    for (const lv of ['low', 'medium', 'high']) {
+        const light = midWidth(0.12, lv), hard = midWidth(0.9, lv);
+        assert.ok(hard > light * (lv === 'low' ? 1.6 : 2.2), `${lv}: קל ${light.toFixed(2)} חזק ${hard.toFixed(2)}`);
+    }
+});
+test('רגישות גבוהה מתעבה יותר מנמוכה באותה לחיצה', () => {
+    assert.ok(midWidth(0.7, 'high') > midWidth(0.7, 'low') * 1.3);
 });
 
 test('לחץ עולה מייצר קו שמתעבה לאורכו', () => {

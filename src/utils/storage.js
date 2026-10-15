@@ -31,6 +31,11 @@ const revisionKey = (id) => `${REVISION_PREFIX}${id}`;
 export const isValidProject = (data) => {
     if (!data || typeof data !== 'object') return false;
     if (typeof data.id !== 'string' || !data.id) return false;
+    // הלוח נשמר כמחרוזת JSON: שכפול מחרוזת זול בהרבה משכפול גרף אובייקטים
+    if (data.fabricJson !== undefined) {
+        if (typeof data.fabricJson !== 'string' || !data.fabricJson.startsWith('{')) return false;
+        return data.math === undefined || Array.isArray(data.math);
+    }
     if (data.fabric !== null && data.fabric !== undefined) {
         if (typeof data.fabric !== 'object') return false;
         if (!Array.isArray(data.fabric.objects)) return false;
@@ -41,7 +46,7 @@ export const isValidProject = (data) => {
 
 /** כמה תוכן יש ברשומה — משמש כדי לזהות דריסה של לוח מלא בלוח ריק */
 export const contentSize = (data) => {
-    const objs = data?.fabric?.objects?.length || 0;
+    const objs = (typeof data?.fabricJson === 'string' ? data.objCount : data?.fabric?.objects?.length) || 0;
     const math = Array.isArray(data?.math) ? data.math.length : 0;
     return objs + math;
 };
@@ -109,13 +114,27 @@ export const saveProject = (id, data) => enqueue(id, async () => {
     }
 });
 
+/**
+ * מחזיר רשומה בצורה שהאפליקציה מכירה: fabric כאובייקט. רשומה שנשמרה
+ * כמחרוזת (fabricJson) נפרשת כאן, פעם אחת בפתיחת הלוח.
+ */
+export const hydrateProject = (data) => {
+    if (!data || typeof data.fabricJson !== 'string') return data;
+    const { fabricJson, objCount: _count, ...rest } = data;
+    void _count;
+    try { return { ...rest, fabric: JSON.parse(fabricJson) }; } catch { return null; }
+};
+
 export const loadProject = async (id) => {
     const data = await get(id);
-    if (data && isValidProject(data)) return data;
+    if (data && isValidProject(data)) { const h = hydrateProject(data); if (h) return h; }
     // הרשומה הראשית פגומה — מנסים את הגיבוי האחרון התקין
     const list = (await get(revisionKey(id))) || [];
     for (let i = list.length - 1; i >= 0; i--) {
-        if (isValidProject(list[i].data)) return { ...list[i].data, recoveredFrom: list[i].savedAt };
+        if (isValidProject(list[i].data)) {
+            const h = hydrateProject(list[i].data);
+            if (h) return { ...h, recoveredFrom: list[i].savedAt };
+        }
     }
     return data || null;
 };
@@ -171,7 +190,7 @@ export const restoreRevision = (id, index) => enqueue(id, async () => {
     const restored = { ...entry.data, id, lastModified: Date.now() };
     await set(id, restored);
     saveMeta.delete(id);
-    return { ok: true, data: restored };
+    return { ok: true, data: hydrateProject(restored) || restored };
 });
 
 /** הערכת נפח האחסון שבשימוש, להצגה בהגדרות ולהחלטה על העברה לענן */

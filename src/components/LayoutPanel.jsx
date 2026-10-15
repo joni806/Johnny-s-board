@@ -4,7 +4,7 @@ import { PAPER_SIZES, LAYOUT_MODES, normalizeLayout, pageSize } from '../utils/p
  * חלונית פריסת הלוח: אינסופי או דפים, גודל דף, כיוון, קנה מידה ועוד.
  * כל שינוי חל מיד על הלוח שמאחור, ללא כפתור "החל".
  */
-export default function LayoutPanel({ layout, pageCount, onChange, onClose }) {
+export default function LayoutPanel({ layout, pageCount, onChange, onClose, inline = false }) {
     const paged = layout.mode !== 'infinite';
     const set = (patch) => onChange(normalizeLayout({ ...layout, ...patch }));
     const paper = PAPER_SIZES.find((p) => p.id === layout.paper) || PAPER_SIZES[0];
@@ -12,12 +12,14 @@ export default function LayoutPanel({ layout, pageCount, onChange, onClose }) {
     const mm = (units) => Math.round(units / (96 / 25.4) / (layout.scale / 100));
 
     return (
-        <div data-ui data-scrollable dir="rtl" className="lp-panel" role="dialog" aria-label="פריסת הלוח"
+        <div data-ui data-scrollable dir="rtl" className={`lp-panel${inline ? ' lp-inline' : ''}`} role={inline ? undefined : 'dialog'} aria-label="פריסת הלוח"
             onPointerDown={(e) => e.stopPropagation()}>
-            <div className="lp-head">
-                <strong>פריסת הלוח</strong>
-                <button className="lp-x" onClick={onClose} aria-label="סגור">✕</button>
-            </div>
+            {!inline && (
+                <div className="lp-head">
+                    <strong>פריסת הלוח</strong>
+                    <button className="lp-x" onClick={onClose} aria-label="סגור">✕</button>
+                </div>
+            )}
 
             <div className="lp-label">סוג לוח</div>
             <div className="lp-modes">

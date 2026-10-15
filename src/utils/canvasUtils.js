@@ -615,37 +615,38 @@ const inkSignature = (o) => [
 ].join('|');
 
 /**
- * מחזיר את מצב הקנבס כאובייקט (לשמירה בדיסק) וגם כמחרוזת JSON (להיסטוריה).
+ * מצב הקנבס כחלקי JSON: { prefix, strs, tail }. החיבור prefix + strs.join(',') + tail
+ * הוא מחרוזת ה־JSON של הלוח. המחרוזות של משיכות שלא השתנו הן אותן מחרוזות בדיוק
+ * בין צילום לצילום, ולכן כל צעד היסטוריה עולה רק את מה ששונה בו.
  * `skip` הוא אובייקט שמצבו הזמני לא אמור להישמר מהמטמון, למשל צורה בעריכה.
  */
 export const serializeCanvas = (canvas, extraProps, skip = null) => {
     const live = canvas.getObjects().filter((o) => !o.excludeFromExport);
     const patched = [];
     const strs = new Array(live.length);
-    const fresh = [];
+    const NOOP = () => ({});
     live.forEach((o, i) => {
         if (o === skip || !isCacheableInk(o)) return;
         const sig = inkSignature(o);
-        const hit = inkCache.get(o);
-        if (hit && hit.sig === sig && hit.path === o.path && hit.nodes === o.inkNodes) {
-            strs[i] = hit.str;
-            o.toObject = () => hit.plain;
-            patched.push(o);
-        } else fresh.push([i, o, sig]);
+        let hit = inkCache.get(o);
+        if (!hit || hit.sig !== sig || hit.path !== o.path || hit.nodes !== o.inkNodes) {
+            hit = { sig, path: o.path, nodes: o.inkNodes, str: JSON.stringify(o.toObject(extraProps)) };
+            inkCache.set(o, hit);
+        }
+        strs[i] = hit.str;
+        o.toObject = NOOP;      // Fabric לא צריך לבנות שוב אובייקט שכבר יש לו מחרוזת
+        patched.push(o);
     });
     let full;
     try { full = canvas.toObject(extraProps); }
     finally { for (const o of patched) delete o.toObject; }
     // full.objects תואם ל־live לפי הסדר, כי שניהם מסוננים באותו אופן
-    for (const [i, o, sig] of fresh) {
-        const plain = full.objects[i];
-        const str = JSON.stringify(plain);
-        inkCache.set(o, { sig, path: o.path, nodes: o.inkNodes, plain, str });
-        strs[i] = str;
-    }
     for (let i = 0; i < live.length; i++) if (strs[i] === undefined) strs[i] = JSON.stringify(full.objects[i]);
     const head = JSON.stringify({ ...full, objects: [] });
     const at = head.indexOf('"objects":[]');
-    const fabricJson = at < 0 ? JSON.stringify(full) : head.slice(0, at) + '"objects":[' + strs.join(',') + ']' + head.slice(at + 12);
-    return { fabric: full, fabricJson };
+    if (at < 0) return { prefix: '{"objects":[', strs: [], tail: ']}', whole: JSON.stringify(full) };
+    return { prefix: head.slice(0, at) + '"objects":[', strs, tail: ']' + head.slice(at + 12) };
 };
+
+/** מחרוזת ה־JSON המלאה של הלוח, מחלקים שחזר serializeCanvas */
+export const joinSerialized = (ser) => ser.whole ?? (ser.prefix + ser.strs.join(',') + ser.tail);

@@ -460,3 +460,5 @@ body[data-inking="1"] .pb-wrap { pointer-events: none; }
 .lp-ico-vertical { background: linear-gradient(currentColor, currentColor) center / 100% 1.5px no-repeat; }
 .lp-ico-horizontal { background: linear-gradient(currentColor, currentColor) center / 1.5px 100% no-repeat; }
 .lp-ico-single { border-radius: 2px; width: 13px; height: 17px; }
+
+.lp-inline { position: static; width: auto; max-width: none; max-height: none; overflow: visible; padding: 0; background: transparent; border: none; box-shadow: none; animation: none; }

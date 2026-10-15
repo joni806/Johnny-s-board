@@ -4,10 +4,10 @@ import 'mathlive';
 import katex from 'katex';
 import {
     createGridGroup, createShape, buildRecognizedShape, isObjectNearPoint, EXTRA_PROPS, typeOf,
-    eraseObjectPartially, serializeCanvas, buildStamp, buildPlotGroup, SHAPE_FILL, getEraseGeometry,
+    eraseObjectPartially, serializeCanvas, joinSerialized, buildStamp, buildPlotGroup, SHAPE_FILL, getEraseGeometry,
 } from '../utils/canvasUtils';
 import { recognizeShape, buildInkPath, fitLine, simplifyRDP } from '../utils/recognition';
-import { createInkStroke, samplePointer, paintInkStep } from '../utils/ink';
+import { createInkStroke, samplePointer, paintInkStep, PRESSURE_PRESETS, PRESSURE_LEVELS } from '../utils/ink';
 import { detectScribble } from '../utils/scribble';
 import { PEN_KINDS, inkColorOn, dashArrayFor, isFilledInk, loadPenState, buildPens } from '../utils/pens';
 import {
@@ -103,8 +103,9 @@ if (fabric.InteractiveFabricObject && fabric.Control && !fabric.InteractiveFabri
 }
 
 /** תקרות ההיסטוריה בזיכרון — במספר צעדים ובנפח תווים */
-const HISTORY_MAX_STEPS = 40;
-const HISTORY_MAX_CHARS = 6000000;
+const HISTORY_MAX_STEPS = 60;
+// ההיסטוריה חולקת מחרוזות בין צעדים, ולכן המגבלה היא על תווים ייחודיים בלבד
+const HISTORY_MAX_CHARS = 40000000;
 
 /** מזהה ייחודי להקלטה. מוגדר מחוץ לרכיב, כי הוא לא טהור */
 const newRecordingId = () => `rec_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -1904,7 +1905,15 @@ const handleViewportPointerUp = (e) => {
         let ser;
         try { ser = serializeCanvas(fCanvas.current, EXTRA_PROPS, edited); }
         finally { if (edited && editLook) edited.set(editLook); }
-        return { fabric: ser.fabric, math: mathData, fabricJson: ser.fabricJson };
+        return { ser, math: mathData };
+    };
+
+    /** צעד היסטוריה כמחרוזת JSON אחת, לשחזור */
+    const entryJson = (e) => '{"fabric":' + joinSerialized(e) + ',"math":' + e.math + '}';
+    const sameEntry = (a, b) => {
+        if (!a || a.prefix !== b.prefix || a.tail !== b.tail || a.math !== b.math || a.whole !== b.whole || a.strs.length !== b.strs.length) return false;
+        for (let i = 0; i < a.strs.length; i++) if (a.strs[i] !== b.strs[i]) return false;
+        return true;
     };
 
     const flushHistory = () => {
@@ -1917,23 +1926,32 @@ const handleViewportPointerUp = (e) => {
         sb.current.pendingSave = false;
         const state = captureState();
         if (!state) return;
-        // הלוח כבר הוא מחרוזת JSON, ולכן לא מסריאלים אותו שוב
-        const json = '{"fabric":' + state.fabricJson + ',"math":' + JSON.stringify(state.math) + '}';
-        delete state.fabricJson;
-        sb.current.lastState = state;
-        if (sb.current.historyStack[sb.current.historyStack.length - 1] === json) return;
-        sb.current.historyStack.push(json);
-        sb.current.historyBytes = (sb.current.historyBytes || 0) + json.length;
-        while (sb.current.historyStack.length > HISTORY_MAX_STEPS
-            || (sb.current.historyBytes > HISTORY_MAX_CHARS && sb.current.historyStack.length > 2)) {
-            sb.current.historyBytes -= sb.current.historyStack.shift().length;
+        const stack = sb.current.historyStack;
+        const prev = stack[stack.length - 1];
+        const entry = { ...state.ser, math: JSON.stringify(state.math), cost: 0 };
+        sb.current.lastState = { math: state.math, entry };
+        if (sameEntry(prev, entry)) return;
+        // מחיר הצעד: רק מחרוזות שלא היו בצעד הקודם
+        const seen = prev ? new Set(prev.strs) : null;
+        entry.cost = entry.prefix.length + entry.tail.length + entry.math.length;
+        for (const str of entry.strs) if (!seen || !seen.has(str)) entry.cost += str.length;
+        stack.push(entry);
+        sb.current.historyBytes = (sb.current.historyBytes || 0) + entry.cost;
+        while (stack.length > HISTORY_MAX_STEPS
+            || (sb.current.historyBytes > HISTORY_MAX_CHARS && stack.length > 2)) {
+            sb.current.historyBytes -= stack.shift().cost;
         }
     };
 
     const scheduleHistory = () => {
         if (sb.current.pendingSave) return;
         sb.current.pendingSave = true;
-        const run = () => { sb.current.idleHandle = null; flushHistory(); };
+        const run = () => {
+            sb.current.idleHandle = null;
+            // לא באמצע משיכה: גם בקשת idle שפגה רצה מיד, ומעכבת את העט
+            if (sb.current.drawing) { sb.current.pendingSave = false; scheduleHistory(); return; }
+            flushHistory();
+        };
         if (typeof requestIdleCallback === 'function') {
             sb.current.idleKind = 'idle';
             sb.current.idleHandle = requestIdleCallback(run, { timeout: 700 });
@@ -1967,7 +1985,7 @@ const handleViewportPointerUp = (e) => {
                 flushHistory();
                 const state = sb.current.lastState;
                 if (!state) return;
-                Promise.resolve(onAutoSave({ fabric: state.fabric, math: state.math, ...boardMeta() })).then((res) => {
+                Promise.resolve(onAutoSave({ ...persistedFabric(state), math: state.math, ...boardMeta() })).then((res) => {
                     if (res && res.ok === false) {
                         showToast(res.reason === 'quota'
                             ? 'האחסון המקומי מלא. כדאי לחבר את הלוח לגוגל דרייב.'
@@ -1979,11 +1997,18 @@ const handleViewportPointerUp = (e) => {
         }
     };
 
+    /**
+     * הלוח נכתב לדיסק כמחרוזת JSON אחת. מחרוזת משוכפלת בזיכרון בלי לבנות
+     * מחדש גרף אובייקטים, בעוד ששכפול של אובייקט הלוח המלא (structured clone)
+     * חסם את המסך לשניות בלוח גדול, בדיוק כשהעט חוזר לכתוב.
+     */
+    const persistedFabric = (st) => ({ fabric: null, fabricJson: joinSerialized(st.entry), objCount: st.entry.strs.length });
+
     const flushNow = () => {
         if (autosaveTimerRef.current) { clearTimeout(autosaveTimerRef.current); autosaveTimerRef.current = null; }
         flushHistory();
         if (onAutoSave && sb.current.lastState) {
-            onAutoSave({ fabric: sb.current.lastState.fabric, math: sb.current.lastState.math, ...boardMeta() });
+            onAutoSave({ ...persistedFabric(sb.current.lastState), math: sb.current.lastState.math, ...boardMeta() });
         }
     };
     const flushNowRef = useRef(flushNow);
@@ -2285,18 +2310,18 @@ const handleViewportPointerUp = (e) => {
         if (sb.current.historyStack.length <= 1 || sb.current.isLocked) return;
         exitNodeEditMode(); sb.current.isLocked = true;
         const popped = sb.current.historyStack.pop();
-        sb.current.historyBytes = Math.max(0, (sb.current.historyBytes || 0) - popped.length);
+        sb.current.historyBytes = Math.max(0, (sb.current.historyBytes || 0) - popped.cost);
         sb.current.redoStack.push(popped);
-        restore(JSON.parse(sb.current.historyStack[sb.current.historyStack.length - 1]));
+        restore(JSON.parse(entryJson(sb.current.historyStack[sb.current.historyStack.length - 1])));
     };
 
     const redo = () => {
         flushHistory();
         if (sb.current.redoStack.length === 0 || sb.current.isLocked) return;
-        exitNodeEditMode(); sb.current.isLocked = true; const stateStr = sb.current.redoStack.pop();
-        sb.current.historyStack.push(stateStr);
-        sb.current.historyBytes = (sb.current.historyBytes || 0) + stateStr.length;
-        restore(JSON.parse(stateStr));
+        exitNodeEditMode(); sb.current.isLocked = true; const entry = sb.current.redoStack.pop();
+        sb.current.historyStack.push(entry);
+        sb.current.historyBytes = (sb.current.historyBytes || 0) + entry.cost;
+        restore(JSON.parse(entryJson(entry)));
     };
     useEffect(() => { gestureActions.current = { undo, redo }; });
 
@@ -3072,6 +3097,7 @@ const restore = (state) => {
             const pressureOff = !pressureInkRef.current && (p.kind === 'pen' || p.kind === 'lord');
             sb.current.inkStroke = createInkStroke({
                 baseWidth: penWidth(p),
+                ...(PRESSURE_PRESETS[devicePrefsRef.current.pressureSens] || PRESSURE_PRESETS.medium),
                 ...(PEN_KINDS[p.kind]?.ink || {}),
                 ...(pressureOff ? { minRatio: 1, maxRatio: 1, tiltInfluence: 0, taperFloor: 1 } : {}),
             });
@@ -4228,6 +4254,19 @@ const restore = (state) => {
                 <div style={{ fontSize: '11px', color: '#71717a', marginTop: '7px', lineHeight: 1.5 }}>
                     רוחב הקו משתנה לפי לחיצת העט והטייתו. בעכבר ובמגע, שאין בהם חיישן לחץ, הרוחב נגזר ממהירות הכתיבה.
                 </div>
+                {pressureInk && (
+                    <div style={{ display: 'flex', gap: '6px', marginTop: '10px', alignItems: 'center' }}>
+                        <span style={{ fontSize: '12px', color: '#a1a1aa' }}>רגישות ללחץ</span>
+                        {PRESSURE_LEVELS.map((lv) => (
+                            <button key={lv.id} onClick={() => updateDevicePrefs({ pressureSens: lv.id })} style={{
+                                flex: 1, padding: '7px 4px', borderRadius: '9px', border: 'none', cursor: 'pointer', fontSize: '12px',
+                                background: devicePrefs.pressureSens === lv.id ? 'rgba(74,222,128,0.15)' : 'rgba(255,255,255,0.05)',
+                                color: devicePrefs.pressureSens === lv.id ? '#4ade80' : '#a1a1aa',
+                                outline: devicePrefs.pressureSens === lv.id ? '1px solid rgba(74,222,128,0.35)' : 'none',
+                            }}>{lv.label}</button>
+                        ))}
+                    </div>
+                )}
             </div>
 
             <div style={{ height: '1px', background: 'rgba(255,255,255,0.07)', margin: '4px 0 14px' }} />

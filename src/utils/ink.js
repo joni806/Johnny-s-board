@@ -18,11 +18,13 @@
 
 export const INK_DEFAULTS = {
     baseWidth: 3,
-    minRatio: 0.38,        // רוחב מזערי ביחס לרוחב הבסיס
-    maxRatio: 1.60,        // רוחב מרבי ביחס לרוחב הבסיס
-    smoothing: 0.28,       // מקדם ממוצע נע מעריכי על אות הלחץ
+    minRatio: 0.32,        // רוחב מזערי ביחס לרוחב הבסיס
+    maxRatio: 2.40,        // רוחב מרבי ביחס לרוחב הבסיס
+    pressureRef: 0.80,     // לחץ שממנו והלאה הקו בעובי המרבי. עט אמיתי כמעט לא מגיע ל־1
+    pressureGamma: 0.75,   // מתחת ל־1 מרים לחצים קלים, שהם רוב הכתיבה
+    smoothing: 0.5,        // מקדם ממוצע נע מעריכי על אות הלחץ
     posSmoothing: 0.45,    // החלקת מיקום קלה נגד רעידות יד
-    maxWidthDelta: 0.20,   // שינוי רוחב מרבי בין דגימות, ביחס לרוחב הבסיס
+    maxWidthDelta: 0.35,   // שינוי רוחב מרבי בין דגימות, ביחס לרוחב הבסיס
     tiltInfluence: 0.40,   // כמה הטיית העט מרחיבה את הקו
     velocityRef: 2.2,      // מהירות במרחב הקנבס שמעליה הקו מידלדל
     taperLength: 7,        // אורך הדעיכה בקצוות
@@ -30,6 +32,21 @@ export const INK_DEFAULTS = {
     minDist: 0.55,         // מרחק מזערי בין דגימות שנשמרות
     capSamples: 7,         // דגימות בכל קצה מעוגל
 };
+
+/**
+ * רגישות ללחץ, לבחירה בהגדרות. כל רמה קובעת כמה העט נפתח בלחיצה חזקה:
+ * גבוהה מרחיבה יותר ומגיעה לעובי המרבי כבר בלחץ בינוני.
+ */
+export const PRESSURE_PRESETS = {
+    low: { minRatio: 0.55, maxRatio: 1.5, pressureRef: 1.0, pressureGamma: 1.0 },
+    medium: { minRatio: 0.32, maxRatio: 2.4, pressureRef: 0.8, pressureGamma: 0.75 },
+    high: { minRatio: 0.2, maxRatio: 3.4, pressureRef: 0.6, pressureGamma: 0.65 },
+};
+export const PRESSURE_LEVELS = [
+    { id: 'low', label: 'נמוכה' },
+    { id: 'medium', label: 'בינונית' },
+    { id: 'high', label: 'גבוהה' },
+];
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const rnd = (v) => Math.round(v * 100) / 100;
@@ -89,7 +106,7 @@ export const createInkStroke = (options = {}) => {
 
     /** גוזר ערך לחץ 0..1 מדגימה בודדת, עם נפילה למהירות כשאין חיישן */
     const rawForce = (pt) => {
-        if (hasRealPressure(pt)) return clamp(pt.p, 0.02, 1);
+        if (hasRealPressure(pt)) return clamp(Math.pow(clamp(pt.p / cfg.pressureRef, 0, 1), cfg.pressureGamma), 0.02, 1);
         if (!prevRaw) return 0.62;
         const dist = Math.hypot(pt.x - prevRaw.x, pt.y - prevRaw.y);
         const dt = Math.max(1, (pt.t || 0) - (prevRaw.t || 0));

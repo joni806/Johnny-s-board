@@ -4,6 +4,8 @@ import Board from './components/Board';
 import Toolbar from './components/Toolbar';
 import PresentBar from './components/PresentBar';
 import DrivePanel from './components/DrivePanel';
+import LayoutPanel from './components/LayoutPanel';
+import { normalizeLayout } from './utils/pages';
 import { backupProject, isConnected as driveConnected } from './utils/drive';
 import { loadPenState, savePenState, buildPens, inkColorOn } from './utils/pens';
 import {
@@ -72,6 +74,7 @@ function App() {
   const [newTitle, setNewTitle] = useState('לוח חדש');
   const [newColor, setNewColor] = useState('#1e3d32');
   const [newPattern, setNewPattern] = useState('grid');
+  const [newLayout, setNewLayout] = useState(() => normalizeLayout(null));
 
   // נקודות גישה לבדיקות הקצה־לקצה ולניפוי באגים מהקונסולה
   useEffect(() => {
@@ -99,7 +102,7 @@ function App() {
     const newId = `${PROJECT_PREFIX}${uuidv4()}`;
     const newProjectData = stamped({
       id: newId, title: newTitle, bg: newColor, pattern: newPattern,
-      fabric: null, math: [], autoSnap: true, folderId,
+      fabric: null, math: [], autoSnap: true, folderId, layout: newLayout,
     });
     await saveProject(newId, newProjectData);
     setShowNewModal(false);
@@ -485,6 +488,11 @@ function App() {
                 ))}
                 <input type="color" value={newColor} onChange={e => setNewColor(e.target.value)} style={{ width: '42px', height: '42px', borderRadius: '50%', cursor: 'pointer', padding: 0, border: 'none', background: 'transparent' }} title="בחר צבע מותאם אישית" />
               </div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">סוג הלוח</label>
+              <LayoutPanel inline layout={newLayout} pageCount={newLayout.pages} onChange={setNewLayout} />
             </div>
 
             <div className="modal-actions">

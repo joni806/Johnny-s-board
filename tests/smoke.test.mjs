@@ -85,7 +85,7 @@ const readProject = () => page.evaluate(async () => {
       cur.continue();
     };
     rq.onerror = () => rej(rq.error);
-  });
+  }).then((v) => (v && typeof v.fabricJson === 'string' ? { ...v, fabric: JSON.parse(v.fabricJson) } : v)); // הלוח נשמר כמחרוזת
 });
 const saved = await readProject();
 

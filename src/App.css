@@ -190,6 +190,8 @@
   max-width: 480px;
   box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.8);
   direction: rtl;
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
 }
 
 .modal-title {

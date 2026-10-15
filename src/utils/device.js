@@ -31,6 +31,8 @@ export const defaultDevicePrefs = () => ({
     penButton: 'erase',
     /** קישקוש על כתב מוחק אותו */
     scratchErase: true,
+    /** כמה העט מתעבה בלחיצה חזקה: low | medium | high */
+    pressureSens: 'medium',
 });
 
 export const sanitizeDevicePrefs = (raw) => {
@@ -40,6 +42,7 @@ export const sanitizeDevicePrefs = (raw) => {
     out.penSeen = raw.penSeen === true;
     if (PEN_BUTTON_ACTIONS.some((a) => a.id === raw.penButton)) out.penButton = raw.penButton;
     if (raw.scratchErase === false) out.scratchErase = false;
+    if (['low', 'medium', 'high'].includes(raw.pressureSens)) out.pressureSens = raw.pressureSens;
     return out;
 };
 

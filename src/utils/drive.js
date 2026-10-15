@@ -228,7 +228,11 @@ export const listAppFiles = async (extraQuery = '') => {
 
 /** גיבוי מלא של לוח כקובץ JSON יחיד בדרייב */
 export const backupProject = async (project, existingFileId = null) => {
-    const payload = JSON.stringify({ ...project, backedUpAt: Date.now() });
+    // לוח שנשמר כמחרוזת מוכנסת לקובץ כמו שהיא, בלי לפרוס ולבנות מחדש
+    const { fabricJson, objCount: _count, ...rest } = project;
+    void _count;
+    let payload = JSON.stringify({ ...rest, fabric: typeof fabricJson === 'string' ? null : rest.fabric, backedUpAt: Date.now() });
+    if (typeof fabricJson === 'string') payload = payload.replace('"fabric":null', () => '"fabric":' + fabricJson);
     const file = await uploadFile({
         name: `${(project.title || 'לוח').replace(/[\\/:*?"<>|]/g, '_')}.board.json`,
         mimeType: 'application/json',
